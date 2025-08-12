@@ -715,6 +715,7 @@ if is_admin:
             hd_view["却下"] = False
             hd_view["却下理由(入力)"] = ""
             hd_view["承認解除"] = False
+            hd_view["削除"] = False
 
             edited = st.data_editor(
                 hd_view,
@@ -737,6 +738,7 @@ if is_admin:
                     "却下理由(入力)": st.column_config.TextColumn("却下理由（入力）"),
                     # ★ 追加
                     "承認解除": st.column_config.CheckboxColumn("承認を取り消す"),
+                    "削除": st.column_config.CheckboxColumn("削除（申請済のみ）"),
                 },
                 key="holiday_approvals_editor"
             )
@@ -756,15 +758,16 @@ if is_admin:
                 conflicts = []
 
                 for _, r in edited.iterrows():
-                    approve = bool(r.get("承認", False))
-                    reject  = bool(r.get("却下", False))
-                    unapprove = bool(r.get("承認解除", False))  # ★ 追加
+                    approve   = bool(r.get("承認", False))
+                    reject    = bool(r.get("却下", False))
+                    unapprove = bool(r.get("承認解除", False))
+                    delete_it = bool(r.get("削除", False))  # ★ 追加
 
-                    # いずれか一つだけ選べる
-                    if sum([approve, reject, unapprove]) == 0:
+                    # いずれか一つだけ
+                    if sum([approve, reject, unapprove, delete_it]) == 0:
                         continue
-                    if sum([approve, reject, unapprove]) > 1:
-                        conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 承認/却下/承認解除は同時に選べません')
+                    if sum([approve, reject, unapprove, delete_it]) > 1:
+                        conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 承認/却下/承認解除/削除は同時に選べません')
                         continue
 
                     key_mask = (
@@ -778,13 +781,11 @@ if is_admin:
 
                     cur_status = str(base.loc[key_mask, "ステータス"].iloc[0])
 
-                    # ポリシー：承認/却下は「申請済」からのみ、承認解除は「承認」からのみ
                     if approve:
                         if cur_status != "申請済":
                             conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため承認できません')
                             continue
-                        action = "承認"
-                        reason = ""
+                        action = "承認"; reason = ""
                     elif reject:
                         if cur_status != "申請済":
                             conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため却下できません')
@@ -794,12 +795,17 @@ if is_admin:
                             conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 却下理由が未入力')
                             continue
                         action = "却下"
-                    else:  # 承認解除
+                    elif unapprove:
                         if cur_status != "承認":
                             conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため承認解除できません')
                             continue
-                        action = "承認解除"
-                        reason = ""
+                        action = "承認解除"; reason = ""
+                    else:  # delete_it
+                        if cur_status != "申請済":
+                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため削除できません')
+                            continue
+                        action = "削除"; reason = ""
+
 
                     to_change.append({
                         "社員ID": r["社員ID"],
@@ -853,12 +859,18 @@ if is_admin:
                             latest.loc[km, "承認日時"] = when_ts
                             latest.loc[km, "却下理由"] = ch["reason"]
                             new_status_for_audit = "却下"
-                        else:  # 承認解除 → 申請済 に戻す
-                            latest.loc[km, "ステータス"] = "申請済"
-                            latest.loc[km, "承認者"]   = ""
-                            latest.loc[km, "承認日時"] = ""
-                            latest.loc[km, "却下理由"] = ""
-                            new_status_for_audit = "申請済"
+                        else:  # 承認解除 または 申請削除
+                            if latest.loc[km, "ステータス"].iloc[0] == "申請済":
+                                # --- レコード削除 ---
+                                latest = latest.drop(km)  # kmは条件式の結果なので drop で削除
+                                new_status_for_audit = "申請削除"
+                            else:
+                                # 承認解除 → 申請済 に戻す
+                                latest.loc[km, "ステータス"] = "申請済"
+                                latest.loc[km, "承認者"]   = ""
+                                latest.loc[km, "承認日時"] = ""
+                                latest.loc[km, "却下理由"] = ""
+                                new_status_for_audit = "申請済"
 
                         applied += int(km.sum())
 
@@ -1051,6 +1063,63 @@ if is_admin:
             if applied:
                 time.sleep(1.2)
                 st.rerun()
+
+    # ==============================
+    # 管理者：データ初期化（ヘッダーのみ残す）
+    # ==============================
+    with st.expander("🧯 データ初期化（ヘッダーのみ残す）", expanded=False):
+        st.warning("⚠️ 取り消しできません。実行前に必ず『バックアップ』を取得してください。")
+        tgt_att   = st.checkbox("勤怠データ（attendance_log.csv）を初期化", value=False)
+        tgt_hreq  = st.checkbox("休日申請（holiday_requests.csv）を初期化", value=False)
+        tgt_audit = st.checkbox("監査ログ（holiday_audit_log.csv）を初期化", value=False)
+        tgt_login = st.checkbox("社員ログイン情報（社員ログイン情報.csv）も初期化（通常はOFF推奨）", value=False)
+
+        confirm_text = st.text_input("確認のため 'DELETE' と入力してください", value="")
+        do_init = st.button("🧨 初期化を実行", type="primary", disabled=(confirm_text.strip().upper() != "DELETE"))
+
+        if do_init:
+            # 念のための事前バックアップを強く推奨
+            try:
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for path, cols, fname in BACKUP_TABLES:
+                        dfb = _read_existing_or_empty(path, cols)
+                        content = dfb[cols].to_csv(index=False)
+                        zf.writestr(fname, content.encode("cp932"))
+                backup_dir = os.path.join(DATA_DIR, "backups")
+                os.makedirs(backup_dir, exist_ok=True)
+                backup_path = os.path.join(backup_dir, f"pre_wipe_{datetime.now():%Y%m%d_%H%M%S}.zip")
+                with open(backup_path, "wb") as f:
+                    f.write(buf.getvalue())
+                st.info(f"既存データのバックアップを保存しました：{backup_path}")
+            except Exception as e:
+                st.warning(f"バックアップで警告：{e}")
+
+            # 初期化ターゲットに応じて空データを書き戻す
+            done = []
+            if tgt_att:
+                empty = pd.DataFrame(columns=ATT_COLUMNS)
+                _write_atomic_csv(empty, CSV_PATH, ATT_COLUMNS)
+                done.append("attendance_log.csv")
+            if tgt_hreq:
+                empty = pd.DataFrame(columns=HOLIDAY_COLUMNS)
+                _write_atomic_csv(empty, HOLIDAY_CSV, HOLIDAY_COLUMNS)
+                done.append("holiday_requests.csv")
+            if tgt_audit:
+                empty = pd.DataFrame(columns=AUDIT_COLUMNS)
+                _write_atomic_csv(empty, AUDIT_LOG_CSV, AUDIT_COLUMNS)
+                done.append("holiday_audit_log.csv")
+            if tgt_login:
+                empty = pd.DataFrame(columns=LOGIN_COLUMNS)
+                _write_atomic_csv(empty, LOGIN_CSV, LOGIN_COLUMNS)
+                done.append("社員ログイン情報.csv")
+
+            if done:
+                st.success("初期化完了：" + " / ".join(done))
+                time.sleep(1.2)
+                st.rerun()
+            else:
+                st.info("初期化対象が選択されていません。")
 
     # 管理者分岐の最後に stop（社員UIに進ませない）
     st.stop()
@@ -1351,3 +1420,70 @@ with st.expander("📅 休日・休暇申請", expanded=False):
             "ステータス":"状態"
         }), hide_index=True, use_container_width=True)
     # ▲▲ ここまで ▲▲
+    # === 申請済みの自分の申請を削除（本人キャンセル） ===
+    st.markdown("#### 申請済みの取消（本人）")
+    hd_all_my = read_holiday_csv()
+    if not hd_all_my.empty:
+        cand = hd_all_my[
+            (hd_all_my["社員ID"] == st.session_state.user_id) &
+            (hd_all_my["ステータス"] == "申請済")
+        ].copy()
+    else:
+        cand = pd.DataFrame(columns=HOLIDAY_COLUMNS)
+
+    if cand.empty:
+        st.caption("取消できる申請はありません（申請済が無いか、すでに承認/却下済みです）。")
+    else:
+        cand = cand.sort_values(["休暇日","申請日"])
+        view = cand[["休暇日","休暇種類","申請日","備考"]].copy()
+        view["取消"] = False
+        edited_cancel = st.data_editor(
+            view,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "休暇日": st.column_config.TextColumn("休暇日", disabled=True),
+                "休暇種類": st.column_config.TextColumn("休暇種類", disabled=True),
+                "申請日": st.column_config.TextColumn("申請日", disabled=True),
+                "備考": st.column_config.TextColumn("備考", disabled=True),
+                "取消": st.column_config.CheckboxColumn("この申請を取り消す"),
+            },
+            key="self_cancel_pending_holidays"
+        )
+        to_cancel = edited_cancel[edited_cancel["取消"]==True][["休暇日","申請日"]].values.tolist()
+        if st.button("選択した『申請済』を取消"):
+            if not to_cancel:
+                st.info("取り消す行が選択されていません。")
+            else:
+                base = read_holiday_csv()
+                before = len(base)
+                rows_for_audit = []
+                when_ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+                for d, applied_on in to_cancel:
+                    km = (
+                        (base["社員ID"] == st.session_state.user_id) &
+                        (base["休暇日"] == d) &
+                        (base["申請日"] == applied_on) &
+                        (base["ステータス"] == "申請済")
+                    )
+                    if km.any():
+                        # 監査ログ
+                        rows_for_audit.append({
+                            "timestamp": when_ts,
+                            "承認者": st.session_state.user_name,   # 実施者（本人）
+                            "社員ID": st.session_state.user_id,
+                            "氏名": st.session_state.user_name,
+                            "休暇日": d,
+                            "申請日": applied_on,
+                            "旧ステータス": "申請済",
+                            "新ステータス": "本人取消",
+                            "却下理由": ""
+                        })
+                        base = base[~km]
+
+                write_holiday_csv(base)
+                append_audit_log(rows_for_audit)
+                removed = before - len(base)
+                st.success(f"{removed} 件の『申請済』を取り消しました。")
+                time.sleep(1)
+                st.rerun()
