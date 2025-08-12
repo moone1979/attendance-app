@@ -340,6 +340,22 @@ def format_hours_minutes(hours_float):
 def _is_hhmm(s: str) -> bool:
     return bool(re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(s).strip()))
 
+# 勤怠データ前処理の後あたり
+if df.empty:
+    # 空でも列を用意しておく（float型で0行）
+    df["勤務時間"] = pd.Series(dtype=float)
+    df["残業時間"] = pd.Series(dtype=float)
+else:
+    results = df.apply(
+        lambda r: pd.Series(calc_work_overtime(r), index=["勤務時間", "残業時間"]),
+        axis=1
+    )
+    df[["勤務時間", "残業時間"]] = results
+
+# 以降はそのままでOK
+df["勤務時間"] = df["勤務時間"].fillna(0).astype(float).round(2)
+df["残業時間"] = df["残業時間"].fillna(0).astype(float).round(2)
+
 # ==============================
 # 分岐：管理者 or 社員
 # ==============================
