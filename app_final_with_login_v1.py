@@ -1139,27 +1139,77 @@ selected_date = st.date_input(
     max_value=today
 )
 
-# 出勤時だけGPS取得（URLクエリ方式）
+# 出勤時だけGPS取得（URLクエリ方式＋手動ボタン）
 if punch_type == "出勤":
+    # --- 手動取得ボタン（ユーザー操作で位置取得 → URLに gps=lat,lon を付けて再読込） ---
     st.markdown("""
+    <div style="margin: .25rem 0 .5rem 0;">
+      <button id="get-gps-btn" style="padding:.5rem .75rem;border-radius:.5rem;border:1px solid #ddd;">
+        📍 現在地を取得する
+      </button>
+    </div>
     <script>
     (function () {
-      if (!navigator.geolocation) return;
-      const url = new URL(window.location.href);
-      if (url.searchParams.get('gps')) return;
-      navigator.geolocation.getCurrentPosition(function(pos){
-        const coords = pos.coords.latitude + "," + pos.coords.longitude;
-        url.searchParams.set('gps', coords);
-        window.location.replace(url.toString());
-      }, function(err){}, {enableHighAccuracy:true, timeout:8000});
+      const btn = document.getElementById('get-gps-btn');
+      if (!btn) return;
+
+      btn.addEventListener('click', function () {
+        if (!navigator.geolocation) {
+          alert('この端末は位置情報に対応していません。');
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(function(pos){
+          const coords = pos.coords.latitude + "," + pos.coords.longitude;
+          const url = new URL(window.location.href);
+          url.searchParams.set('gps', coords);
+          window.location.replace(url.toString());
+        }, function(err){
+          alert('位置情報の取得に失敗しました: ' + err.message + '\\n(ブラウザの位置情報許可とHTTPS接続をご確認ください)');
+        }, {enableHighAccuracy:true, timeout:10000});
+      });
     })();
     </script>
     """, unsafe_allow_html=True)
 
+    # --- 自動取得（ページ表示時に一度だけ / すでにgpsが付いていたらスキップ） ---
+    st.markdown("""
+    <script>
+    (function () {
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('gps')) return;  // 既に取得済みなら何もしない
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(function(pos){
+          const coords = pos.coords.latitude + "," + pos.coords.longitude;
+          url.searchParams.set('gps', coords);
+          window.location.replace(url.toString());
+        }, function(err){ /* 失敗時は黙って無視（手動ボタンを利用してもらう） */ }, 
+        {enableHighAccuracy:true, timeout:8000});
+      } catch(e) {}
+    })();
+    </script>
+    """, unsafe_allow_html=True)
+
+# --- 位置情報取得 ---
 try:
     gps_value = st.query_params.get("gps", None)
 except Exception:
     gps_value = None
+
+# クエリのみを使う（簡略化）
+effective_gps = gps_value
+
+# 保存時に使う緯度経度をここで確定
+lat, lng = "", ""
+if effective_gps and isinstance(effective_gps, str) and "," in effective_gps:
+    lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
+
+# --- 見える化（任意） ---
+if punch_type == "出勤":
+    if effective_gps:
+        st.caption(f"📍 位置情報取得済み：{effective_gps}")
+    else:
+        st.caption("📍 位置情報は未取得です（自動取得が出ない場合は『現在地を取得する』を押してください）")
 
 # ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
 holiday_df_all = read_holiday_csv()
@@ -1203,10 +1253,6 @@ else:
             mask_same_day = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == new_date)
 
             if punch_type == "出勤":
-                lat, lng = "", ""
-                if gps_value and isinstance(gps_value, str) and "," in gps_value:
-                    lat, lng = [s.strip() for s in gps_value.split(",", 1)]
-
                 if mask_same_day.any():
                     df_att.loc[mask_same_day, ["出勤時刻","緯度","経度"]] = [now_hm, lat, lng]
                 else:
