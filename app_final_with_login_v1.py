@@ -325,10 +325,6 @@ def calc_work_overtime(row):
         overtime = max(0.0, work_eff - 8.0)    # 実働8h超
         return round(work_eff, 2), round(overtime, 2)
 
-df[["勤務時間","残業時間"]] = df.apply(lambda r: pd.Series(calc_work_overtime(r)), axis=1)
-df["勤務時間"] = df["勤務時間"].fillna(0).astype(float).round(2)
-df["残業時間"] = df["残業時間"].fillna(0).astype(float).round(2)
-
 def format_hours_minutes(hours_float):
     total_minutes = int(round(float(hours_float) * 60)) if pd.notna(hours_float) else 0
     h, m = divmod(total_minutes, 60)
@@ -859,18 +855,22 @@ if is_admin:
                             latest.loc[km, "承認日時"] = when_ts
                             latest.loc[km, "却下理由"] = ch["reason"]
                             new_status_for_audit = "却下"
-                        else:  # 承認解除 または 申請削除
-                            if latest.loc[km, "ステータス"].iloc[0] == "申請済":
-                                # --- レコード削除 ---
-                                latest = latest.drop(km)  # kmは条件式の結果なので drop で削除
-                                new_status_for_audit = "申請削除"
-                            else:
-                                # 承認解除 → 申請済 に戻す
-                                latest.loc[km, "ステータス"] = "申請済"
-                                latest.loc[km, "承認者"]   = ""
-                                latest.loc[km, "承認日時"] = ""
-                                latest.loc[km, "却下理由"] = ""
-                                new_status_for_audit = "申請済"
+                        elif ch["action"] == "承認解除":
+                            if cur2 != "承認":
+                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ（承認解除できません）')
+                                continue
+                            latest.loc[km, "ステータス"] = "申請済"
+                            latest.loc[km, "承認者"] = ""
+                            latest.loc[km, "承認日時"] = ""
+                            latest.loc[km, "却下理由"] = ""
+                            new_status_for_audit = "申請済"
+
+                        elif ch["action"] == "削除":
+                            if cur2 != "申請済":
+                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ（削除は申請済のみ）')
+                                continue
+                            latest = latest.loc[~km].copy()
+                            new_status_for_audit = "申請削除"
 
                         applied += int(km.sum())
 
