@@ -6,6 +6,7 @@ import re
 import io
 import zipfile
 import zoneinfo
+import streamlit.components.v1 as components
 from datetime import datetime, date, timedelta
 
 # 日本時間のタイムゾーン設定
@@ -1139,56 +1140,57 @@ selected_date = st.date_input(
     max_value=today
 )
 
-# 出勤時だけGPS取得（URLクエリ方式＋手動ボタン）
+# 出勤時だけGPS取得（components.html でJSを確実に動かす）
 if punch_type == "出勤":
-    # --- 手動取得ボタン（ユーザー操作で位置取得 → URLに gps=lat,lon を付けて再読込） ---
-    st.markdown("""
-    <div style="margin: .25rem 0 .5rem 0;">
-      <button id="get-gps-btn" style="padding:.5rem .75rem;border-radius:.5rem;border:1px solid #ddd;">
+    # 手動ボタン（トップウィンドウで位置取得 → 親ページURLを書き換え）
+    components.html("""
+    <div style="margin:.25rem 0 .5rem 0;">
+      <button onclick="getGPS()" style="padding:.5rem .75rem;border-radius:.5rem;border:1px solid #ddd;border-radius:.5rem;">
         📍 現在地を取得する
       </button>
     </div>
     <script>
-    (function () {
-      const btn = document.getElementById('get-gps-btn');
-      if (!btn) return;
-
-      btn.addEventListener('click', function () {
-        if (!navigator.geolocation) {
+    function getGPS(){
+      try{
+        const topWin = window.top || window.parent || window;
+        if(!topWin.navigator || !topWin.navigator.geolocation){
           alert('この端末は位置情報に対応していません。');
           return;
         }
-        navigator.geolocation.getCurrentPosition(function(pos){
+        topWin.navigator.geolocation.getCurrentPosition(function(pos){
           const coords = pos.coords.latitude + "," + pos.coords.longitude;
-          const url = new URL(window.location.href);
+          const url = new URL(topWin.location.href);
           url.searchParams.set('gps', coords);
-          window.location.replace(url.toString());
+          topWin.location.replace(url.toString());
         }, function(err){
-          alert('位置情報の取得に失敗しました: ' + err.message + '\\n(ブラウザの位置情報許可とHTTPS接続をご確認ください)');
+          alert('位置情報の取得に失敗しました: ' + err.message + '\\n(位置情報の許可とHTTPS接続をご確認ください)');
         }, {enableHighAccuracy:true, timeout:10000});
-      });
-    })();
+      }catch(e){
+        alert('スクリプトエラー: ' + (e && e.message ? e.message : e));
+      }
+    }
     </script>
-    """, unsafe_allow_html=True)
+    """, height=80)
 
-    # --- 自動取得（ページ表示時に一度だけ / すでにgpsが付いていたらスキップ） ---
-    st.markdown("""
+    # 自動取得（URLにgpsが無いときだけ一度試行）
+    components.html("""
     <script>
-    (function () {
-      try {
-        const url = new URL(window.location.href);
-        if (url.searchParams.get('gps')) return;  // 既に取得済みなら何もしない
-        if (!navigator.geolocation) return;
-        navigator.geolocation.getCurrentPosition(function(pos){
+    (function(){
+      try{
+        const topWin = window.top || window.parent || window;
+        const url = new URL(topWin.location.href);
+        if(url.searchParams.get('gps')) return;
+        if(!topWin.navigator || !topWin.navigator.geolocation) return;
+        topWin.navigator.geolocation.getCurrentPosition(function(pos){
           const coords = pos.coords.latitude + "," + pos.coords.longitude;
           url.searchParams.set('gps', coords);
-          window.location.replace(url.toString());
-        }, function(err){ /* 失敗時は黙って無視（手動ボタンを利用してもらう） */ }, 
+          topWin.location.replace(url.toString());
+        }, function(err){ /* 自動は失敗しても黙ってスルー（手動ボタンを使ってもらう） */ },
         {enableHighAccuracy:true, timeout:8000});
-      } catch(e) {}
+      }catch(e){}
     })();
     </script>
-    """, unsafe_allow_html=True)
+    """, height=0)
 
 # --- 位置情報取得 ---
 try:
@@ -1253,6 +1255,7 @@ else:
             mask_same_day = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == new_date)
 
             if punch_type == "出勤":
+                # ここでは lat, lng をそのまま使う
                 if mask_same_day.any():
                     df_att.loc[mask_same_day, ["出勤時刻","緯度","経度"]] = [now_hm, lat, lng]
                 else:
@@ -1262,12 +1265,13 @@ else:
                         "緯度": lat, "経度": lng
                     }])], ignore_index=True)
 
-                # 出勤後はクエリからgpsを消す（再打刻防止）
+                # 出勤後はURLからgpsを消す
                 try:
                     if "gps" in st.query_params:
                         st.query_params.from_dict({k: v for k, v in st.query_params.items() if k != "gps"})
                 except Exception:
                     pass
+
 
             else:  # 退勤
                 if mask_same_day.any():
