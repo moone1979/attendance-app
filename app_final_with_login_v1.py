@@ -262,15 +262,21 @@ st.title("🕒 出退勤管理アプリ")
 st.subheader("📆 集計対象月の選択")
 
 def get_month_period(selected_month: int, today: date):
-    current_year = today.year
+    """
+    月度: 26日～翌月25日
+    - 'selected_month' は「締めの月」（例: 1=12/26～1/25, 12=11/26～12/25）
+    - 今日基準で、未来の月を選んだ場合は前年にアンカー
+    """
+    base_year = today.year
+    if selected_month > today.month:
+        base_year -= 1  # 未来月は前年に寄せる
+
     if selected_month == 1:
-        start = pd.to_datetime(f"{current_year-1}-12-26")
-        end   = pd.to_datetime(f"{current_year}-01-25")
+        start = pd.to_datetime(f"{base_year-1}-12-26")
+        end   = pd.to_datetime(f"{base_year}-01-25")
     else:
-        start = pd.to_datetime(f"{current_year}-{selected_month-1}-26")
-        end_y = current_year if selected_month != 12 else current_year + 1
-        end_m = selected_month if selected_month != 12 else 1
-        end   = pd.to_datetime(f"{end_y}-{end_m}-25")
+        start = pd.to_datetime(f"{base_year}-{selected_month-1:02d}-26")
+        end   = pd.to_datetime(f"{base_year}-{selected_month:02d}-25")
     return start, end
 
 default_idx = today_jst().month - 1  # 0〜11
@@ -300,7 +306,7 @@ df["日付"] = pd.to_datetime(df["日付"], errors="coerce")
 df["_出"]  = pd.to_datetime(df["出勤時刻"], format="%H:%M", errors="coerce")
 df["_退"]  = pd.to_datetime(df["退勤時刻"], format="%H:%M", errors="coerce")
 
-base_date = pd.Timestamp.today().normalize()
+base_date = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
 def _combine(t):
     return pd.Timestamp.combine(base_date.date(), t.time()) if pd.notna(t) else pd.NaT
 
@@ -488,10 +494,14 @@ if is_admin:
                     d  = str(r["日付"])
                     sh = str(r["出勤時刻"]).strip()
                     eh = str(r["退勤時刻"]).strip()
-                    if sh and not _is_hhmm(sh): errors.append(f"{d} の出勤時刻が不正: {sh}")
-                    if eh and not _is_hhmm(eh): errors.append(f"{d} の退勤時刻が不正: {eh}")
-                    if errors:
-                        continue
+
+                    row_errs = []
+                    if sh and not _is_hhmm(sh): row_errs.append(f"{d} の出勤時刻が不正: {sh}")
+                    if eh and not _is_hhmm(eh): row_errs.append(f"{d} の退勤時刻が不正: {eh}")
+                    if row_errs:
+                        errors.extend(row_errs)
+                        continue  # ← この行だけスキップ。以降の正常行は続行
+
                     m = (base["社員ID"] == selected_user_id) & (base["日付"] == d)
                     if not m.any():
                         base = pd.concat([base, pd.DataFrame([{
@@ -1196,7 +1206,12 @@ if punch_type == "出勤":
 try:
     gps_value = st.query_params.get("gps", None)
 except Exception:
-    gps_value = None
+    # 古い Streamlit 向けフォールバック
+    try:
+        qp = st.experimental_get_query_params()
+        gps_value = (qp.get("gps", [None]) or [None])[0]
+    except Exception:
+        gps_value = None
 
 # クエリのみを使う（簡略化）
 effective_gps = gps_value
@@ -1207,11 +1222,19 @@ if effective_gps and isinstance(effective_gps, str) and "," in effective_gps:
     lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
 
 # --- 見える化（任意） ---
-if punch_type == "出勤":
-    if effective_gps:
-        st.caption(f"📍 位置情報取得済み：{effective_gps}")
-    else:
-        st.caption("📍 位置情報は未取得です（自動取得が出ない場合は『現在地を取得する』を押してください）")
+if punch_type == "出勤" and not effective_gps:
+    with st.expander("📍 位置情報が取れない場合の手入力", expanded=False):
+        man_lat = st.text_input("緯度（例: 35.681236）", "")
+        man_lng = st.text_input("経度（例: 139.767125）", "")
+        if man_lat.strip() and man_lng.strip():
+            lat, lng = man_lat.strip(), man_lng.strip()
+            st.caption("手入力された位置情報を保存に使用します。")
+        else:
+            st.warning(
+                "📍 位置情報がまだ取得できていません。\n\n"
+                "👉 ページを再読込するか、『現在地を取得する』ボタンを押してください。\n"
+                "※ 端末の位置情報許可（ブラウザ/LINEアプリ/Safari設定）が有効になっているかもご確認ください。"
+            )
 
 # ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
 holiday_df_all = read_holiday_csv()
