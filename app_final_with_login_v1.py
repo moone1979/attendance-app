@@ -1232,7 +1232,7 @@ if punch_type == "出勤":
       }catch(e){}
     })();
     </script>
-    """, height=80, key="gps_component")
+    """, height=80)
 
 # URLクエリ（互換対応：新API/旧APIどちらでも取得を試みる）
 try:
