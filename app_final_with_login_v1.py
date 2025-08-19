@@ -63,6 +63,19 @@ def safe_write_csv(df: pd.DataFrame, path: str, columns: list[str], retries=5, w
     return False
 
 # ==============================
+# CSVインジェクション対策（Excelでの式実行防止）
+# ==============================
+def sanitize_for_csv(value: str) -> str:
+    """
+    セルの先頭が Excel 式 (=, +, -, @) と解釈されるのを防止する
+    """
+    if not isinstance(value, str):
+        return value
+    if value.startswith(("=", "+", "-", "@")):
+        return "'" + value  # シングルクォートで無害化
+    return value
+
+# ==============================
 # 休日申請 CSV 操作
 # ==============================
 def read_holiday_csv() -> pd.DataFrame:
@@ -84,6 +97,9 @@ def read_holiday_csv() -> pd.DataFrame:
     return df[HOLIDAY_COLUMNS].copy()
 
 def write_holiday_csv(df: pd.DataFrame):
+    # --- CSVインジェクション対策を適用 ---
+    df = df.applymap(sanitize_for_csv)
+
     for col in HOLIDAY_COLUMNS:
         if col not in df.columns:
             df[col] = ""
@@ -296,12 +312,22 @@ def get_open_period(today_d: date):
 
 OPEN_START, OPEN_END = get_open_period(today_jst())
 
+# 勤怠データ前処理の直前あたりに差し込み
+df_login_nodup = (
+    df_login[df_login["社員ID"].astype(str).str.strip() != "admin"]
+    .drop_duplicates(subset=["社員ID"], keep="first")
+)
+df_login_for_merge = pd.concat([
+    df_login_nodup,
+    df_login[df_login["社員ID"].astype(str).str.strip() == "admin"]  # 念のため残す
+], ignore_index=True)
+
+df = _read_csv_flexible(CSV_PATH).fillna("")
+df = df.merge(df_login_for_merge[["社員ID", "部署"]], on="社員ID", how="left")
+
 # ==============================
 # 勤怠データ前処理
 # ==============================
-df = _read_csv_flexible(CSV_PATH).fillna("")
-df = df.merge(df_login[["社員ID", "部署"]], on="社員ID", how="left")
-
 df["日付"] = pd.to_datetime(df["日付"], errors="coerce")
 df["_出"]  = pd.to_datetime(df["出勤時刻"], format="%H:%M", errors="coerce")
 df["_退"]  = pd.to_datetime(df["退勤時刻"], format="%H:%M", errors="coerce")
@@ -1150,78 +1176,88 @@ selected_date = st.date_input(
     max_value=today
 )
 
-# 出勤時だけGPS取得（components.html でJSを確実に動かす）
+# ========= ここから：GPS 取得（社員UIの punch_type / selected_date の直後に挿入）=========
+# 出勤時だけGPS取得UI（Streamlit ComponentsでJSを実行）
+gps_from_component = None
 if punch_type == "出勤":
-    # 手動ボタン（トップウィンドウで位置取得 → 親ページURLを書き換え）
-    components.html("""
+    gps_from_component = components.html("""
     <div style="margin:.25rem 0 .5rem 0;">
-      <button onclick="getGPS()" style="padding:.5rem .75rem;border-radius:.5rem;border:1px solid #ddd;border-radius:.5rem;">
+      <button id="btn" style="padding:.5rem .75rem;border:1px solid #ddd;border-radius:.5rem;">
         📍 現在地を取得する
       </button>
+      <span id="msg" style="margin-left:.5rem;color:#666;"></span>
     </div>
     <script>
-    function getGPS(){
-      try{
-        const topWin = window.top || window.parent || window;
-        if(!topWin.navigator || !topWin.navigator.geolocation){
-          alert('この端末は位置情報に対応していません。');
-          return;
-        }
-        topWin.navigator.geolocation.getCurrentPosition(function(pos){
-          const coords = pos.coords.latitude + "," + pos.coords.longitude;
-          const url = new URL(topWin.location.href);
-          url.searchParams.set('gps', coords);
-          topWin.location.replace(url.toString());
-        }, function(err){
-          alert('位置情報の取得に失敗しました: ' + err.message + '\\n(位置情報の許可とHTTPS接続をご確認ください)');
-        }, {enableHighAccuracy:true, timeout:10000});
-      }catch(e){
-        alert('スクリプトエラー: ' + (e && e.message ? e.message : e));
-      }
-    }
-    </script>
-    """, height=80)
-
-    # 自動取得（URLにgpsが無いときだけ一度試行）
-    components.html("""
-    <script>
     (function(){
+      const topWin = window.top || window.parent || window;
+      const send = (val) => {
+        try {
+          topWin.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val }, "*");
+          const m = document.getElementById("msg");
+          if (m) m.textContent = "取得済み: " + val;
+        } catch (e) {}
+      };
+
+      function getGPS(){
+        try{
+          const nav = (topWin.navigator && topWin.navigator.geolocation) ? topWin.navigator : navigator;
+          if(!nav || !nav.geolocation){
+            alert("この端末は位置情報に対応していません。");
+            return;
+          }
+          nav.geolocation.getCurrentPosition(function(pos){
+            const coords = pos.coords.latitude + "," + pos.coords.longitude;
+            send(coords); // ページ遷移せず Streamlit に値を返す
+          }, function(err){
+            alert("位置情報の取得に失敗しました: " + err.message + "\\n(位置情報の許可とHTTPS接続をご確認ください)");
+          }, {enableHighAccuracy:true, timeout:10000});
+        }catch(e){
+          alert("スクリプトエラー: " + (e && e.message ? e.message : e));
+        }
+      }
+
+      // 手動ボタン
+      const b = document.getElementById("btn");
+      if (b) b.addEventListener("click", getGPS);
+
+      // 起動時に一度だけ自動取得（失敗しても無言スルー、ページ遷移なし）
       try{
-        const topWin = window.top || window.parent || window;
-        const url = new URL(topWin.location.href);
-        if(url.searchParams.get('gps')) return;
-        if(!topWin.navigator || !topWin.navigator.geolocation) return;
-        topWin.navigator.geolocation.getCurrentPosition(function(pos){
-          const coords = pos.coords.latitude + "," + pos.coords.longitude;
-          url.searchParams.set('gps', coords);
-          topWin.location.replace(url.toString());
-        }, function(err){ /* 自動は失敗しても黙ってスルー（手動ボタンを使ってもらう） */ },
-        {enableHighAccuracy:true, timeout:8000});
+        const nav = (topWin.navigator && topWin.navigator.geolocation) ? topWin.navigator : navigator;
+        if(nav && nav.geolocation){
+          nav.geolocation.getCurrentPosition(function(pos){
+            const coords = pos.coords.latitude + "," + pos.coords.longitude;
+            send(coords);
+          }, function(err){ /* noop */ }, {enableHighAccuracy:true, timeout:8000});
+        }
       }catch(e){}
     })();
     </script>
-    """, height=0)
+    """, height=80, key="gps_component")
 
-# --- 位置情報取得 ---
+# URLクエリ（互換対応：新API/旧APIどちらでも取得を試みる）
 try:
-    gps_value = st.query_params.get("gps", None)
+    gps_from_query = st.query_params.get("gps", None)
 except Exception:
-    # 古い Streamlit 向けフォールバック
     try:
         qp = st.experimental_get_query_params()
-        gps_value = (qp.get("gps", [None]) or [None])[0]
+        gps_from_query = (qp.get("gps", [None]) or [None])[0]
     except Exception:
-        gps_value = None
+        gps_from_query = None
 
-# クエリのみを使う（簡略化）
-effective_gps = gps_value
+# 優先順位: コンポーネント > クエリ > 既存セッション
+if gps_from_component:
+    st.session_state["manual_gps"] = gps_from_component
+elif gps_from_query:
+    st.session_state["manual_gps"] = gps_from_query
 
-# 保存時に使う緯度経度をここで確定
+effective_gps = st.session_state.get("manual_gps", None)
+
+# 緯度・経度の確定（この一回だけでOK）
 lat, lng = "", ""
-if effective_gps and isinstance(effective_gps, str) and "," in effective_gps:
+if isinstance(effective_gps, str) and "," in effective_gps:
     lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
 
-# --- 見える化（任意） ---
+# 位置情報が無いときの手入力フォールバック（任意）
 if punch_type == "出勤" and not effective_gps:
     with st.expander("📍 位置情報が取れない場合の手入力", expanded=False):
         man_lat = st.text_input("緯度（例: 35.681236）", "")
@@ -1233,8 +1269,14 @@ if punch_type == "出勤" and not effective_gps:
             st.warning(
                 "📍 位置情報がまだ取得できていません。\n\n"
                 "👉 ページを再読込するか、『現在地を取得する』ボタンを押してください。\n"
-                "※ 端末の位置情報許可（ブラウザ/LINEアプリ/Safari設定）が有効になっているかもご確認ください。"
+                "※ 端末の位置情報許可（ブラウザ/LINEアプリ/Safari設定）が有効かご確認ください。"
             )
+
+# （参考）この後の「保存」処理では、出勤時に lat, lng をそのまま使えばOKです。
+# 例：
+# if punch_type == "出勤":
+#     df_att.loc[mask_same_day, ["出勤時刻","緯度","経度"]] = [now_hm, lat, lng]
+# ========= ここまで：GPS 取得 =========
 
 # ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
 holiday_df_all = read_holiday_csv()
@@ -1294,7 +1336,6 @@ else:
                         st.query_params.from_dict({k: v for k, v in st.query_params.items() if k != "gps"})
                 except Exception:
                     pass
-
 
             else:  # 退勤
                 if mask_same_day.any():
