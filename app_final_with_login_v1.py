@@ -645,46 +645,50 @@ if is_admin:
                 beautify(ws2)
 
                 # ===== 「休日申請」シート 専用フォーマット =====
-                # 対象列の列番号を見つける
                 headers = [c.value for c in next(ws2.iter_rows(min_row=1, max_row=1))]
+
                 def col_letter(col_name: str):
                     idx = headers.index(col_name) + 1  # 1-based
                     return get_column_letter(idx), idx
 
-                # 1) 日付/日時の書式（セル値は既にdatetimeなので number_format だけでOK）
+                # 1) 日付/日時の書式（既存のままでOK）
                 try:
-                    col申請, _ = col_letter("申請日")
-                    col休暇, _ = col_letter("休暇日")
-                    col承認時, _ = col_letter("承認日時")
-                    for row in range(2, ws2.max_row + 1):
-                        ws2[f"{col申請}{row}"].number_format = "yyyy-mm-dd"
-                        ws2[f"{col休暇}{row}"].number_format = "yyyy-mm-dd"
-                        ws2[f"{col承認時}{row}"].number_format = "yyyy-mm-dd hh:mm"
+                    if ws2.max_row >= 2:  # ← ★ データ行があるときだけ適用
+                        col申請, _ = col_letter("申請日")
+                        col休暇, _ = col_letter("休暇日")
+                        col承認時, _ = col_letter("承認日時")
+                        for row in range(2, ws2.max_row + 1):
+                            ws2[f"{col申請}{row}"].number_format = "yyyy-mm-dd"
+                            ws2[f"{col休暇}{row}"].number_format = "yyyy-mm-dd"
+                            ws2[f"{col承認時}{row}"].number_format = "yyyy-mm-dd hh:mm"
                 except ValueError:
-                    # ヘッダ名が見つからない場合はスキップ（安全策）
                     pass
 
-                # 2) ステータスの色分け（申請済=黄、承認=緑、却下=赤）
+                # 2) ステータス色分け（データ行がある場合のみ）
                 try:
-                    colステータス, col_idx = col_letter("ステータス")
-                    status_range = f"{colステータス}2:{colステータス}{ws2.max_row}"
+                    if ws2.max_row >= 2 and "ステータス" in headers:  # ← ★ ここが重要
+                        colステータス, _ = col_letter("ステータス")
+                        status_range = f"{colステータス}2:{colステータス}{ws2.max_row}"
 
-                    fill_pending = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # 薄黄
-                    fill_approved = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") # 薄緑
-                    fill_rejected = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid") # 薄赤
+                        from openpyxl.styles import PatternFill
+                        from openpyxl.formatting.rule import CellIsRule
 
-                    ws2.conditional_formatting.add(
-                        status_range,
-                        CellIsRule(operator="equal", formula=['"申請済"'], stopIfTrue=False, fill=fill_pending)
-                    )
-                    ws2.conditional_formatting.add(
-                        status_range,
-                        CellIsRule(operator="equal", formula=['"承認"'], stopIfTrue=False, fill=fill_approved)
-                    )
-                    ws2.conditional_formatting.add(
-                        status_range,
-                        CellIsRule(operator="equal", formula=['"却下"'], stopIfTrue=False, fill=fill_rejected)
-                    )
+                        fill_pending  = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+                        fill_approved = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                        fill_rejected = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+
+                        ws2.conditional_formatting.add(
+                            status_range,
+                            CellIsRule(operator="equal", formula=['"申請済"'], stopIfTrue=False, fill=fill_pending)
+                        )
+                        ws2.conditional_formatting.add(
+                            status_range,
+                            CellIsRule(operator="equal", formula=['"承認"'], stopIfTrue=False, fill=fill_approved)
+                        )
+                        ws2.conditional_formatting.add(
+                            status_range,
+                            CellIsRule(operator="equal", formula=['"却下"'], stopIfTrue=False, fill=fill_rejected)
+                        )
                 except ValueError:
                     pass
 
@@ -1245,9 +1249,9 @@ except Exception:
         gps_from_query = None
 
 # 優先順位: コンポーネント > クエリ > 既存セッション
-if gps_from_component:
+if gps_from_component is not None:
     st.session_state["manual_gps"] = gps_from_component
-elif gps_from_query:
+elif gps_from_query is not None:
     st.session_state["manual_gps"] = gps_from_query
 
 effective_gps = st.session_state.get("manual_gps", None)
@@ -1272,6 +1276,18 @@ if punch_type == "出勤" and not effective_gps:
                 "※ 端末の位置情報許可（ブラウザ/LINEアプリ/Safari設定）が有効かご確認ください。"
             )
 
+# （任意の可視化）サーバ側が認識しているGPSを表示
+if punch_type == "出勤":
+    if lat and lng:
+        st.caption(f"📍 受信済みGPS（サーバ判定）：{lat},{lng}")
+    else:
+        st.caption("📍 受信待ち（保存ボタンは無効です）")
+
+# 出勤時のみ、GPSが無ければ保存不可
+save_disabled = (punch_type == "出勤") and not (lat and lng)
+if punch_type == "出勤" and save_disabled:
+    st.warning("位置情報が未取得です。『現在地を取得する』ボタンか手入力で緯度・経度を入れてください。")
+
 # （参考）この後の「保存」処理では、出勤時に lat, lng をそのまま使えばOKです。
 # 例：
 # if punch_type == "出勤":
@@ -1295,7 +1311,7 @@ else:
     if is_approved_holiday:
         st.warning("この日は承認済みです。打刻する場合は、管理者にご相談ください。")
 
-    if st.button("保存", disabled=is_approved_holiday):
+    if st.button("保存", disabled=(is_approved_holiday or save_disabled)):
         # 二重チェック（承認切替の競合防止）
         _hd = read_holiday_csv()
         _now_is_approved = (
@@ -1307,6 +1323,10 @@ else:
         if _now_is_approved:
             st.error("この日は承認済みの休日です。打刻はできません。")
         else:
+            # ★ ここを追加：サーバ側の最終ガード
+            if punch_type == "出勤" and not (lat and lng):
+                st.error("位置情報が未取得のため保存できません。")
+                st.stop()
             # ------- ここから保存本体（このブロックの“中”に全部入れる） -------
             now_hm = datetime.now(JST).strftime("%H:%M")
             new_date = selected_date.strftime("%Y-%m-%d")
@@ -1332,8 +1352,16 @@ else:
 
                 # 出勤後はURLからgpsを消す
                 try:
-                    if "gps" in st.query_params:
-                        st.query_params.from_dict({k: v for k, v in st.query_params.items() if k != "gps"})
+                    qp = dict(st.query_params)  # 取得
+                    if "gps" in qp:
+                        del qp["gps"]
+                        # 新API
+                        try:
+                            st.query_params.clear()
+                            st.query_params.update(qp)
+                        except Exception:
+                            # 旧API
+                            st.experimental_set_query_params(**qp)
                 except Exception:
                     pass
 
