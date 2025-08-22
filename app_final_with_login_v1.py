@@ -1291,75 +1291,88 @@ else:
             st.error("この日は承認済みの休日です。打刻はできません。")
             st.stop()
 
-        if punch_type == "出勤":
-            err = st.session_state.get("gps_error", "")
-            if not (lat and lng):
+        if st.session_state.get("pending_save"):
+            st.session_state.need_gps = False  # 今ランでポップアップさせない
+            action = st.session_state.get("punch_action", {})
+            action_type = action.get("type", punch_type)  # フォールバック
+            action_date = action.get("date", selected_date.strftime("%Y-%m-%d"))
+
+            # 承認済み休日ブロック（ここは stop でOK：保存自体を禁止する仕様）
+            _hd = read_holiday_csv()
+            if ((_hd["社員ID"] == st.session_state.user_id) &
+                (_hd["休暇日"] == action_date) &
+                (_hd["ステータス"] == "承認")).any():
                 st.session_state.pending_save = False
-                st.session_state.need_gps = False              # ★ 追加
-                st.error("位置情報を取得できませんでした：" + (err.replace("ERROR:","") if err else "位置情報が未取得です。"))
+                st.error("この日は承認済みの休日です。打刻はできません。")
                 st.stop()
 
-            # --- 出勤の保存本体（いままでの保存処理をそのまま置く） ---
+            # ここから保存本体
             now_hm = datetime.now(JST).strftime("%H:%M")
-            new_date = selected_date.strftime("%Y-%m-%d")
-            df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) \
-                     else pd.DataFrame(columns=["社員ID","氏名","日付","出勤時刻","退勤時刻","緯度","経度"])
-            for col in ["社員ID","氏名","日付","出勤時刻","退勤時刻","緯度","経度"]:
-                if col not in df_att.columns:
-                    df_att[col] = ""
-            mask_same_day = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == new_date)
-            if mask_same_day.any():
-                df_att.loc[mask_same_day, ["出勤時刻","緯度","経度"]] = [now_hm, lat, lng]
-            else:
-                df_att = pd.concat([df_att, pd.DataFrame([{
-                    "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
-                    "日付": new_date, "出勤時刻": now_hm, "退勤時刻": "",
-                    "緯度": lat, "経度": lng
-                }])], ignore_index=True)
-            if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
-                removed = auto_cancel_holiday_by_attendance(st.session_state.user_id, st.session_state.user_name, new_date)
-                if removed > 0:
-                    st.info(f"この日の休暇申請（{removed}件）を自動取消しました。")
-                st.session_state.pending_save = False
-                st.success(f"✅ 出勤 を {now_hm} で保存しました。")
-                time.sleep(1.2)
-                st.rerun()
 
-        else:
-            # --- 退勤の保存本体（座標不要・従来通り） ---
-            now_hm = datetime.now(JST).strftime("%H:%M")
-            new_date = selected_date.strftime("%Y-%m-%d")
-            df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) \
-                     else pd.DataFrame(columns=["社員ID","氏名","日付","出勤時刻","退勤時刻","緯度","経度"])
-            for col in ["社員ID","氏名","日付","出勤時刻","退勤時刻","緯度","経度"]:
-                if col not in df_att.columns:
-                    df_att[col] = ""
-            mask_same_day = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == new_date)
-            if mask_same_day.any():
-                df_att.loc[mask_same_day, "退勤時刻"] = now_hm
-            else:
-                df_att = pd.concat([df_att, pd.DataFrame([{
-                    "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
-                    "日付": new_date, "出勤時刻": "", "退勤時刻": now_hm,
-                    "緯度": "", "経度": ""
-                }])], ignore_index=True)
-            if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
-                st.session_state.pending_save = False
-                st.success(f"✅ 退勤 を {now_hm} で保存しました。")
-                time.sleep(1.2)
-                st.rerun()
+            if action_type == "出勤":
+                err = st.session_state.get("gps_error", "")
+                # ★ GPSが無くても保存を続行（警告のみ）
+                if not (lat and lng):
+                    st.warning("位置情報を取得できませんでした。位置情報なしで保存します。"
+                               + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
+
+                df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) \
+                         else pd.DataFrame(columns=ATT_COLUMNS)
+                for col in ATT_COLUMNS:
+                    if col not in df_att.columns:
+                        df_att[col] = ""
+
+                m = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == action_date)
+                if m.any():
+                    df_att.loc[m, ["出勤時刻","緯度","経度"]] = [now_hm, lat or "", lng or ""]
+                else:
+                    df_att = pd.concat([df_att, pd.DataFrame([{
+                        "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                        "日付": action_date, "出勤時刻": now_hm, "退勤時刻": "",
+                        "緯度": lat or "", "経度": lng or ""
+                    }])], ignore_index=True)
+
+                if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
+                    removed = auto_cancel_holiday_by_attendance(st.session_state.user_id, st.session_state.user_name, action_date)
+                    if removed > 0:
+                        st.info(f"この日の休暇申請（{removed}件）を自動取消しました。")
+                    st.session_state.pending_save = False
+                    st.success(f"✅ 出勤 を {now_hm} で保存しました。")
+                    time.sleep(1.2)
+                    st.rerun()
+
+            else:  # 退勤
+                df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) \
+                         else pd.DataFrame(columns=ATT_COLUMNS)
+                for col in ATT_COLUMNS:
+                    if col not in df_att.columns:
+                        df_att[col] = ""
+
+                m = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == action_date)
+                if m.any():
+                    df_att.loc[m, "退勤時刻"] = now_hm
+                else:
+                    df_att = pd.concat([df_att, pd.DataFrame([{
+                        "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                        "日付": action_date, "出勤時刻": "", "退勤時刻": now_hm,
+                        "緯度": "", "経度": ""
+                    }])], ignore_index=True)
+
+                if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
+                    st.session_state.pending_save = False
+                    st.success(f"✅ 退勤 を {now_hm} で保存しました。")
+                    time.sleep(1.2)
+                    st.rerun()
 
     if st.button("保存", disabled=is_approved_holiday):
-        if punch_type == "出勤" and not (lat and lng):
-            # 出勤でGPS未取得 → 次のランで A の透明コンポーネントがポップアップを自動起動
-            st.session_state.need_gps = True
-            st.session_state.pending_save = True
-            st.stop()   # ★ 同一ランの続行を止める（重要）
-        else:
-            # 退勤 or 既にGPSあり → そのまま保存フローへ
-            st.session_state.need_gps = False
-            st.session_state.pending_save = True
-            st.rerun()
+        st.session_state.pending_save = True
+        st.session_state.need_gps = False  # ← 任意なので起動しない
+        st.session_state.punch_action = {
+            "type": punch_type,
+            "date": selected_date.strftime("%Y-%m-%d"),
+        }
+        st.session_state.gps_error = ""
+        st.rerun() 
 
 # ==============================
 # 月別履歴（社員）
