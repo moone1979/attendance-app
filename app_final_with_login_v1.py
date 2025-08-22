@@ -1242,7 +1242,7 @@ gps_val = components.html(f"""
   }}, false);
 }})();
 </script>
-""", height=0, key="gps_bg_core")
+""", height=0)
 
 # 受け取り→セッションへ反映
 if isinstance(gps_val, str) and gps_val:
