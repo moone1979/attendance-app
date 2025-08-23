@@ -1180,61 +1180,118 @@ selected_date = st.date_input(
     max_value=today
 )
 
-# ---- 位置情報（明示取得：出勤/退勤どちらでも可）----
-# セッション初期化（既存があれば維持）
+# ========= 背景GPS取得（UI＋非表示JS）=========
+
+# セッション初期化
 if "manual_gps" not in st.session_state:
-    st.session_state.manual_gps = ""
+    st.session_state.manual_gps = ""   # "lat,lng"
 if "gps_error" not in st.session_state:
     st.session_state.gps_error = ""
-if "pending_save" not in st.session_state:
-    st.session_state.pending_save = False
+if "gps_click_token" not in st.session_state:
+    st.session_state.gps_click_token = 0.0  # ボタン押下トリガ
 
-# 直近の座標（ある場合はそのまま使う）
-effective_gps = st.session_state.get("manual_gps") or ""
-lat, lng = ("", "")
+st.markdown("### 📍 位置情報")
+col_g1, col_g2 = st.columns([1, 3])
+with col_g1:
+    # 押下でトークン更新→即 rerun（JS が新トークンを拾ってポップアップ起動）
+    if st.button("位置情報を取得する"):
+        st.session_state.gps_error = ""
+        st.session_state.manual_gps = ""
+        st.session_state.gps_click_token = time.time()
+        st.rerun()
+
+with col_g2:
+    # 現状表示
+    if st.session_state.manual_gps:
+        st.success(f"取得済み: {st.session_state.manual_gps}")
+    elif st.session_state.gps_error:
+        st.warning("取得失敗: " + st.session_state.gps_error)
+    else:
+        st.caption("未取得です（必要なら上のボタンを押してください）")
+
+# ---- geolocation 実行用（keyは渡さない！）----
+gps_val = components.html(f"""
+<div id="gps-hook" style="display:none"></div>
+<script>
+(function(){{
+  // Pythonから埋め込まれるクリックトークン（変化時だけ実行）
+  const TOKEN = "{st.session_state.get('gps_click_token', 0)}";
+
+  // 値をStreamlitに返す
+  const send = (val) => {{
+    try {{
+      window.parent.postMessage({{ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val }}, "*");
+    }} catch(e) {{}}
+  }};
+
+  // トークン未設定なら何もしない
+  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") {{
+    return;
+  }}
+
+  // geolocation は iframe だと拒否されがちなのでポップアップで実行
+  let w = window.open("", "_blank", "width=360,height=280");
+  if (!w) {{
+    send("ERROR:POPUP_BLOCKED");
+  }} else {{
+    w.document.write(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+      <title>位置情報の取得</title></head>
+      <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
+        <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
+        <div id="s"></div>
+        <script>
+          (function(){{
+            const say=(t)=>{{try{{document.getElementById('s').textContent=t;}}catch(_){}}};
+            if (!('geolocation' in navigator)) {{
+              window.opener.postMessage({{ type:"gps_error", value:"GEO_UNSUPPORTED" }}, "*");
+              say("この端末/ブラウザでは位置情報が使えません。");
+              return;
+            }}
+            navigator.geolocation.getCurrentPosition(function(pos){{
+              const v = pos.coords.latitude + "," + pos.coords.longitude;
+              window.opener.postMessage({{ type:"gps", value: v }}, "*");
+              say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
+              setTimeout(()=>window.close(), 400);
+            }}, function(err){{
+              const msg = (err && err.message) ? err.message : "GEO_ERROR";
+              window.opener.postMessage({{ type:"gps_error", value: msg }}, "*");
+              say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
+              setTimeout(()=>window.close(), 900);
+            }}, {{ enableHighAccuracy:true, timeout:15000, maximumAge:0 }});
+          }})();
+        <\/script>
+      </body></html>`);
+  }}
+
+  // ポップアップ→この iframe → Streamlit へ転送
+  window.addEventListener("message", (ev) => {{
+    const d = ev && ev.data ? ev.data : {{}};
+    if (d.type === "gps") {{
+      send(d.value);                 // "lat,lng"
+    }} else if (d.type === "gps_error") {{
+      send("ERROR:" + d.value);      // "ERROR:..."
+    }}
+  }}, false);
+}})();
+</script>
+""", height=0)
+
+# JSからの結果をセッションへ反映
+if isinstance(gps_val, str) and gps_val:
+    if gps_val.startswith("ERROR:"):
+        st.session_state.gps_error = gps_val.replace("ERROR:", "")
+        st.session_state.manual_gps = ""
+    else:
+        st.session_state.manual_gps = gps_val
+        st.session_state.gps_error = ""
+
+# Python側で使う値（以降の保存処理で使用）
+effective_gps = st.session_state.get("manual_gps", "")
+lat, lng = "", ""
 if isinstance(effective_gps, str) and "," in effective_gps:
     lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
 
-# 状態表示
-if lat and lng:
-    st.caption(f"📍 現在の取得済み位置情報: {lat}, {lng}")
-else:
-    st.info("位置情報は任意です。取得できない場合は『位置情報なし』で保存されます。")
-
-# 取得ボタン（どちらの打刻でも出す）
-col_gps_btn, _ = st.columns([1.3, 2])
-with col_gps_btn:
-    if st.button("📍 位置情報を取得する"):
-        # ボタンクリック＝ユーザー操作のため geolocation 許可ダイアログが出る
-        gps_val = components.html("""
-        <script>
-        (function(){
-          const send = (v) => {
-            try {
-              window.parent.postMessage({isStreamlitMessage:true, type:"streamlit:setComponentValue", value:v}, "*");
-            } catch(e){}
-          };
-          if(!navigator.geolocation){ send("ERROR:GEO_UNSUPPORTED"); return; }
-          navigator.geolocation.getCurrentPosition(
-            (pos)=>{ send(pos.coords.latitude + "," + pos.coords.longitude); },
-            (err)=>{ send("ERROR:" + (err && err.message ? err.message : "GEO_ERROR")); },
-            {enableHighAccuracy:true, timeout:12000}
-          );
-        })();
-        </script>
-        """, height=0)
-
-        if isinstance(gps_val, str) and gps_val:
-            if gps_val.startswith("ERROR:"):
-                st.session_state.gps_error = gps_val
-                st.warning("位置情報を取得できませんでした。位置情報なしで保存できます。"
-                           + f"（原因: {gps_val.replace('ERROR:','')}）")
-            else:
-                st.session_state.manual_gps = gps_val
-                st.session_state.gps_error = ""
-                st.success(f"位置情報を取得しました：{gps_val}")
-        # 画面はこのままでも良い。最新表示にしたければ rerun:
-        # st.rerun()
+# ========= 背景GPS取得ここまで =========
 
 # ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
 holiday_df_all = read_holiday_csv()
