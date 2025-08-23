@@ -1241,7 +1241,7 @@ gps_val = components.html(f"""
         <div id="s"></div>
         <script>
           (function(){{
-            const say=(t)=>{{try{{document.getElementById('s').textContent=t;}}catch(_){}}};
+            const say=(t)=>{{{{try{{{{document.getElementById('s').textContent=t;}}}}catch(_){}}}};
             if (!('geolocation' in navigator)) {{
               window.opener.postMessage({{ type:"gps_error", value:"GEO_UNSUPPORTED" }}, "*");
               say("この端末/ブラウザでは位置情報が使えません。");
