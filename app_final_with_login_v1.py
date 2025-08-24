@@ -1274,15 +1274,16 @@ gps_val = components.html(f"""
   }}, false);
 }})();
 </script>
-""", height=0)
+""", height=0, key="gps_component")
 
 # JSからの結果をセッションへ反映
-if isinstance(gps_val, str) and gps_val:
-    if gps_val.startswith("ERROR:"):
-        st.session_state.gps_error = gps_val.replace("ERROR:", "")
+raw = st.session_state.get("gps_component")
+if isinstance(raw, str) and raw:
+    if raw.startswith("ERROR:"):
+        st.session_state.gps_error = raw.replace("ERROR:", "")
         st.session_state.manual_gps = ""
     else:
-        st.session_state.manual_gps = gps_val
+        st.session_state.manual_gps = raw
         st.session_state.gps_error = ""
 
 # Python側で使う値（以降の保存処理で使用）
