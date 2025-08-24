@@ -1274,17 +1274,19 @@ gps_val = components.html(f"""
   }}, false);
 }})();
 </script>
-""", height=0, key="gps_component")
+""", height=0)
 
 # JSからの結果をセッションへ反映
-raw = st.session_state.get("gps_component")
-if isinstance(raw, str) and raw:
-    if raw.startswith("ERROR:"):
-        st.session_state.gps_error = raw.replace("ERROR:", "")
+if isinstance(gps_val, str) and gps_val:
+    if gps_val.startswith("ERROR:"):
+        st.session_state.gps_error = gps_val.replace("ERROR:", "")
         st.session_state.manual_gps = ""
     else:
-        st.session_state.manual_gps = raw
+        st.session_state.manual_gps = gps_val
         st.session_state.gps_error = ""
+    # ★ ここを追加：次ランでポップアップを再起動させない
+    st.session_state.gps_click_token = 0
+    st.rerun()
 
 # Python側で使う値（以降の保存処理で使用）
 effective_gps = st.session_state.get("manual_gps", "")
