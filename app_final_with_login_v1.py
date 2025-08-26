@@ -1168,6 +1168,26 @@ if is_admin:
 # ==============================
 # 社員UI
 # ==============================
+# ========= クエリパラメータからGPS結果を受け取る =========
+# （ポップアップが成功/失敗時に ?gps=lat,lng または ?gps_error=... を付けて親をリロードします）
+qs = st.query_params
+gps_q = qs.get("gps")
+gps_err_q = qs.get("gps_error")
+
+if gps_q:
+    st.session_state.manual_gps = str(gps_q)
+    st.session_state.gps_error = ""
+    # 取り込み後はクエリを消しておく（F5などでも再適用されないように）
+    st.query_params.clear()
+    st.success(f"位置情報を取得しました：{st.session_state.manual_gps}")
+
+elif gps_err_q:
+    st.session_state.manual_gps = ""
+    st.session_state.gps_error = str(gps_err_q)
+    st.query_params.clear()
+    st.warning(f"位置情報の取得に失敗：{st.session_state.gps_error}")
+# ========= ここまで =========
+
 st.header("📝 出退勤の入力")
 
 # 社員UI：日付入力（前月ロックのUX強化）
@@ -1209,72 +1229,81 @@ with col_g2:
     else:
         st.caption("未取得です（必要なら上のボタンを押してください）")
 
-# ---- geolocation 実行用（keyは渡さない！）----
-gps_val = components.html(f"""
+# ---- geolocation 実行用（keyは渡さない）----
+TOKEN_VAL = str(st.session_state.get("gps_click_token", 0))
+gps_val = components.html(
+    """
 <div id="gps-hook" style="display:none"></div>
 <script>
-(function(){{
-  // Pythonから埋め込まれるクリックトークン（変化時だけ実行）
-  const TOKEN = "{st.session_state.get('gps_click_token', 0)}";
-
-  // 値をStreamlitに返す
-  const send = (val) => {{
-    try {{
-      window.parent.postMessage({{ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val }}, "*");
-    }} catch(e) {{}}
-  }};
+(function(){
+  // Python から埋め込むクリックトークン（値が変わったときだけ動作）
+  const TOKEN = "__TOKEN__";
 
   // トークン未設定なら何もしない
-  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") {{
+  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") {
     return;
-  }}
+  }
 
-  // geolocation は iframe だと拒否されがちなのでポップアップで実行
+  // 位置情報は iframe だとブロックされがちなので別ウィンドウで実行
   let w = window.open("", "_blank", "width=360,height=280");
-  if (!w) {{
-    send("ERROR:POPUP_BLOCKED");
-  }} else {{
-    w.document.write(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-      <title>位置情報の取得</title></head>
-      <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
-        <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
-        <div id="s"></div>
-        <script>
-          (function(){{
-            const say = (t) => {{ try {{ document.getElementById('s').textContent = t; }} catch (_ ) {{}} }};
-            if (!('geolocation' in navigator)) {{
-              window.opener.postMessage({{ type:"gps_error", value:"GEO_UNSUPPORTED" }}, "*");
-              say("この端末/ブラウザでは位置情報が使えません。");
-              return;
-            }}
-            navigator.geolocation.getCurrentPosition(function(pos){{
-              const v = pos.coords.latitude + "," + pos.coords.longitude;
-              window.opener.postMessage({{ type:"gps", value: v }}, "*");
-              say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-              setTimeout(()=>window.close(), 400);
-            }}, function(err){{
-              const msg = (err && err.message) ? err.message : "GEO_ERROR";
-              window.opener.postMessage({{ type:"gps_error", value: msg }}, "*");
-              say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
-              setTimeout(()=>window.close(), 900);
-            }}, {{ enableHighAccuracy:true, timeout:15000, maximumAge:0 }});
-          }})();
-        <\/script>
-      </body></html>`);
-  }}
+  // ポップアップがブロックされた場合は親を ?gps_error=POPUP_BLOCKED でリロード
+  if (!w) {
+    try {
+      const topWin = window.top;
+      const base = topWin.location.origin + topWin.location.pathname;
+      topWin.location.href = base + "?gps_error=" + encodeURIComponent("POPUP_BLOCKED");
+    } catch (e) { /* ignore */ }
+    return;
+  }
 
-  // ポップアップ→この iframe → Streamlit へ転送
-  window.addEventListener("message", (ev) => {{
-    const d = ev && ev.data ? ev.data : {{}};
-    if (d.type === "gps") {{
-      send(d.value);                 // "lat,lng"
-    }} else if (d.type === "gps_error") {{
-      send("ERROR:" + d.value);      // "ERROR:..."
-    }}
-  }}, false);
-}})();
+  // ポップアップの中身（成功/失敗で親のURLを書き換えて閉じる）
+  w.document.write(`<!doctype html><html><head>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>位置情報の取得</title>
+  </head>
+  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
+    <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
+    <div id="s" style="white-space:pre-wrap"></div>
+    <script>
+      (function(){
+        const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
+
+        function redirectWith(param, value){
+          try {
+            const topWin = window.opener && window.opener.top ? window.opener.top : null;
+            if (topWin && topWin.location) {
+              const base = topWin.location.origin + topWin.location.pathname;
+              topWin.location.href = base + "?" + param + "=" + encodeURIComponent(value);
+            }
+          } catch (e) {}
+        }
+
+        if (!('geolocation' in navigator)) {
+          say("この端末/ブラウザでは位置情報が使えません。");
+          redirectWith("gps_error","GEO_UNSUPPORTED");
+          setTimeout(()=>window.close(), 600);
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(function(pos){
+          const v = pos.coords.latitude + "," + pos.coords.longitude;
+          say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
+          redirectWith("gps", v);
+          setTimeout(()=>window.close(), 300);
+        }, function(err){
+          const msg = (err && err.message) ? err.message : "GEO_ERROR";
+          say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
+          redirectWith("gps_error", msg);
+          setTimeout(()=>window.close(), 700);
+        }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
+      })();
+    <\/script>
+  </body></html>`);
+})();
 </script>
-""", height=0)
+""".replace("__TOKEN__", TOKEN_VAL),
+    height=0
+)
 
 # JSからの結果をセッションへ反映
 if isinstance(gps_val, str) and gps_val:
