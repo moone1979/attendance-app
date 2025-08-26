@@ -1184,16 +1184,26 @@ if is_admin:
 # ==============================
 st.header("📝 出退勤の入力")
 
+# === 入力可能な過去期間の設定（例：直近2ヶ月） ===
+PAST_MONTHS = 2
+
+today = today_jst()
+try:
+    # dateutil があれば月単位で厳密に
+    from dateutil.relativedelta import relativedelta
+    past_limit_date = today - relativedelta(months=PAST_MONTHS)
+except Exception:
+    # 無ければだいたいの日数で代替（31日×ヶ月）
+    past_limit_date = today - timedelta(days=31*PAST_MONTHS)
+
 # 社員UI：日付入力（前月ロックのUX強化）
 punch_type = st.radio("打刻種類を選択", ["出勤", "退勤"], horizontal=True)
-today = today_jst()
 selected_date = st.date_input(
     "日付",
     value=today,
-    min_value=OPEN_START.date(),   # ★ 追加：当月開始日より前は選べない
-    max_value=today
+    min_value=past_limit_date,     # ← 直近◯ヶ月まで遡れる
+    max_value=today                # ← 未来は不可
 )
-
 # ========= 背景GPS取得（UI＋非表示JS）=========
 
 # セッション初期化
@@ -1230,35 +1240,38 @@ gps_val = components.html(
 <div id="gps-hook" style="display:none"></div>
 <script>
 (function(){
+  // Python から埋め込むクリックトークン（値が変わったときだけ動作）
   const TOKEN = "__TOKEN__";
-  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
 
-  // Streamlit に値を返す
-  const send = (val) => {
+  // Streamlit に値を返すヘルパー
+  function sendToStreamlit(val){
     try {
-      window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val },
-        "*"
-      );
+      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val }, "*");
     } catch(e) {}
-  };
+  }
 
-  // ポップアップを開く
+  // トークン未設定なら何もしない
+  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") { return; }
+
+  // ポップアップで geolocation を取る（iframe は拒否されやすい）
   let w = window.open("", "_blank", "width=360,height=280");
-  if (!w) { send("ERROR:POPUP_BLOCKED"); return; }
+  if (!w) {
+    // ブロックされたら即座に値を返す（リロードしない）
+    sendToStreamlit("ERROR:POPUP_BLOCKED");
+    return;
+  }
 
-  // ポップアップ→親への結果受信（1回だけ）
-  const onMsg = (ev) => {
+  // 親（＝この iframe）へ結果を postMessage で返す
+  window.addEventListener("message", function(ev){
     const d = ev && ev.data ? ev.data : {};
     if (d.type === "gps") {
-      send(d.value); window.removeEventListener("message", onMsg); try { w.close(); } catch(e) {}
+      sendToStreamlit(d.value);   // "lat,lng"
     } else if (d.type === "gps_error") {
-      send("ERROR:" + d.value); window.removeEventListener("message", onMsg); try { w.close(); } catch(e) {}
+      sendToStreamlit("ERROR:" + d.value);
     }
-  };
-  window.addEventListener("message", onMsg, false);
+  }, false);
 
-  // ポップアップの中身（成功/失敗で window.opener.postMessage(...) する）
+  // ポップアップの中身：成功/失敗で opener（＝この iframe）に postMessage して自動クローズ
   w.document.write(`<!doctype html><html><head>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>位置情報の取得</title>
@@ -1268,26 +1281,26 @@ gps_val = components.html(
     <div id="s" style="white-space:pre-wrap"></div>
     <script>
       (function(){
-        const say = (t) => { try { document.getElementById('s').textContent = t; } catch(_) {} };
+        const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
         if (!('geolocation' in navigator)) {
           say("この端末/ブラウザでは位置情報が使えません。");
-          try { window.opener.postMessage({ type:"gps_error", value:"GEO_UNSUPPORTED" }, "*"); } catch(e) {}
+          try { window.opener.postMessage({ type:"gps_error", value:"GEO_UNSUPPORTED" }, "*"); } catch(e){}
           setTimeout(()=>window.close(), 700);
           return;
         }
         navigator.geolocation.getCurrentPosition(function(pos){
           const v = pos.coords.latitude + "," + pos.coords.longitude;
           say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-          try { window.opener.postMessage({ type:"gps", value: v }, "*"); } catch(e) {}
+          try { window.opener.postMessage({ type:"gps", value: v }, "*"); } catch(e){}
           setTimeout(()=>window.close(), 400);
         }, function(err){
           const msg = (err && err.message) ? err.message : "GEO_ERROR";
           say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
-          try { window.opener.postMessage({ type:"gps_error", value: msg }, "*"); } catch(e) {}
+          try { window.opener.postMessage({ type:"gps_error", value: msg }, "*"); } catch(e){}
           setTimeout(()=>window.close(), 900);
         }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
       })();
-    <\\/script>
+    <\/script>
   </body></html>`);
 })();
 </script>
@@ -1295,10 +1308,10 @@ gps_val = components.html(
     height=0
 )
 
-# ★ デバッグログ
-st.write({"gps_val": gps_val, "state": dict(st.session_state)})
+# ★ デバッグログ（必要なら）
+# st.write({"gps_val": gps_val, "state": dict(st.session_state)})
 
-# ← 直後に“セッションへ反映”ブロックを必ず残す
+# JSからの結果をセッションへ反映（components.html の setComponentValue ハックで値が返る）
 if isinstance(gps_val, str) and gps_val:
     if gps_val.startswith("ERROR:"):
         st.session_state.gps_error = gps_val.replace("ERROR:", "")
@@ -1306,6 +1319,7 @@ if isinstance(gps_val, str) and gps_val:
     else:
         st.session_state.manual_gps = gps_val
         st.session_state.gps_error = ""
+    # 次ランでポップアップが再起動しないようにリセット
     st.session_state.gps_click_token = 0
     st.rerun()
 
@@ -1327,8 +1341,8 @@ is_approved_holiday = bool((
 ).any())
 
 # ---- 前月ロック判定 ----
-if pd.to_datetime(selected_date) < OPEN_START:
-    st.error("この日は当月外のため打刻できません。管理者にご相談ください。")
+if selected_date < past_limit_date or selected_date > today:
+    st.error(f"この日は入力範囲外です。{past_limit_date:%Y-%m-%d} 〜 {today:%Y-%m-%d} の間で選択してください。")
 else:
     # （任意）承認済み休日なら事前に注意を表示
     if is_approved_holiday:
@@ -1426,8 +1440,8 @@ else:
 with st.expander(f"📋 月別履歴（{start_date:%Y/%m/%d}～{end_date:%Y/%m/%d}）", expanded=False):
     df_self = df[
         (df["社員ID"] == st.session_state.user_id) &
-        (df["日付"] >= start_date) &
-        (df["日付"] <= end_date)
+        (df["日付"] >= pd.Timestamp(past_limit_date)) &
+        (df["日付"] <= pd.Timestamp(today))
     ].sort_values("日付")
 
     if df_self.empty:
