@@ -1317,6 +1317,16 @@ with col_g2:
     else:
         st.caption("未取得です（必要なら上のボタンを押してください）")
 
+# ここで余白を詰めるCSSを注入
+st.markdown("""
+<style>
+/* 保存ボタン直後のデフォルト余白を削減 */
+div.stButton + div {
+    margin-top: -15px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ---- geolocation 実行用（keyは渡さない）----
 TOKEN_VAL = str(st.session_state.get("gps_click_token", 0))
 gps_val = components.html(
