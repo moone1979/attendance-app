@@ -313,8 +313,17 @@ if st.session_state.dept:
     st.sidebar.caption(f"🏷 部署：{st.session_state.dept}")
 
 if st.sidebar.button("ログアウト"):
+    # セッション全消し
     for key in list(st.session_state.keys()):
         del st.session_state[key]
+
+    # URLクエリから uid / gps / gps_error を除去（= 自動ログインを無効化）
+    qs = dict(st.query_params)
+    new_qs = {k: v for k, v in qs.items() if k not in ("uid", "gps", "gps_error")}
+    st.query_params.clear()
+    if new_qs:
+        st.query_params.update(new_qs)
+
     st.rerun()
 
 st.title("🕒 出退勤管理アプリ")
