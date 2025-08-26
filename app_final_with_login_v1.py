@@ -1260,6 +1260,16 @@ selected_date = st.date_input(
     min_value=past_limit_date,     # ← 直近◯ヶ月まで遡れる
     max_value=today                # ← 未来は不可
 )
+
+# ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
+holiday_df_all = read_holiday_csv()
+sel_date_str = selected_date.strftime("%Y-%m-%d")
+is_approved_holiday = bool((
+    (holiday_df_all["社員ID"] == st.session_state.user_id) &
+    (holiday_df_all["休暇日"] == sel_date_str) &
+    (holiday_df_all["ステータス"] == "承認")
+).any())
+
 # ========= 背景GPS取得（UI＋非表示JS）=========
 
 # セッション初期化
@@ -1279,6 +1289,9 @@ with col_g1:
         st.session_state.manual_gps = ""
         st.session_state.gps_click_token = time.time()
         st.rerun()
+
+    # ← ここに保存ボタンを移動
+    save_clicked = st.button("保存", key="save_btn_top", disabled=is_approved_holiday)
 
 with col_g2:
     # 現状表示
@@ -1377,14 +1390,19 @@ if isinstance(effective_gps, str) and "," in effective_gps:
 
 # ========= 背景GPS取得ここまで =========
 
-# ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
-holiday_df_all = read_holiday_csv()
-sel_date_str = selected_date.strftime("%Y-%m-%d")
-is_approved_holiday = bool((
-    (holiday_df_all["社員ID"] == st.session_state.user_id) &
-    (holiday_df_all["休暇日"] == sel_date_str) &
-    (holiday_df_all["ステータス"] == "承認")
-).any())
+# …（gps_val の処理、lat/lng の算出の直後あたりに）
+if save_clicked:
+    if punch_type == "出勤" and not (lat and lng):
+        err = st.session_state.get("gps_error", "")
+        st.warning("位置情報が未取得のため、位置情報なしで保存します。"
+                   + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
+
+    st.session_state.pending_save = True
+    st.session_state.punch_action = {
+        "type": punch_type,
+        "date": selected_date.strftime("%Y-%m-%d"),
+    }
+    st.rerun()
 
 # ---- 前月ロック判定 ----
 if selected_date < past_limit_date or selected_date > today:
@@ -1463,33 +1481,6 @@ else:
                 st.success(f"✅ 退勤 を {now_hm} で保存しました。")
                 time.sleep(1.2)
                 st.rerun()
-
-    # ボタン直前に入れる
-    st.markdown(
-        """
-        <style>
-        /* 位置情報行と保存ボタンの間の余白を縮める */
-        div.stButton { margin-top: -10px; }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # ===== 保存ボタン（任意で位置情報あり/なしどちらでも保存） =====
-    if st.button("保存", disabled=is_approved_holiday):
-        # 出勤で座標が無い場合はあらかじめ注意
-        if punch_type == "出勤" and not (lat and lng):
-            err = st.session_state.get("gps_error", "")
-            st.warning("位置情報が未取得のため、位置情報なしで保存します。"
-                       + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
-
-        # 保存フェーズへ
-        st.session_state.pending_save = True
-        st.session_state.punch_action = {
-            "type": punch_type,
-            "date": selected_date.strftime("%Y-%m-%d"),
-        }
-        st.rerun()
 
 # ==============================
 # 月別履歴（社員）
