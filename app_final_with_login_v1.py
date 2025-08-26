@@ -1280,6 +1280,21 @@ if "gps_error" not in st.session_state:
 if "gps_click_token" not in st.session_state:
     st.session_state.gps_click_token = 0.0  # ボタン押下トリガ
 
+# 位置情報UIの直前に一度だけCSSを注入
+st.markdown("""
+<style>
+/* 位置情報セクションの“下”のデフォ余白を詰める */
+.gps-block { margin-bottom: -14px !important; }
+
+/* 念のため：このセクション内のボタンの上余白もゼロに */
+.gps-block .stButton>button { margin-top: 0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# —— ここから位置情報セクションを丸ごとラップ ——
+st.markdown('<div class="gps-block">', unsafe_allow_html=True)
+
+
 st.markdown("### 📍 位置情報")
 col_g1, col_g2 = st.columns([1, 3])
 with col_g1:
@@ -1403,6 +1418,8 @@ if save_clicked:
         "date": selected_date.strftime("%Y-%m-%d"),
     }
     st.rerun()
+
+st.markdown('</div>', unsafe_allow_html=True)  # ← ラッパー終わり
 
 # ---- 前月ロック判定 ----
 if selected_date < past_limit_date or selected_date > today:
