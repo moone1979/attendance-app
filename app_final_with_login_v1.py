@@ -1464,8 +1464,16 @@ else:
                 time.sleep(1.2)
                 st.rerun()
 
-    # ▼ここで余白を詰める
-    st.markdown("<div style='margin-bottom:-2rem;'></div>", unsafe_allow_html=True)
+    # ボタン直前に入れる
+    st.markdown(
+        """
+        <style>
+        /* 位置情報行と保存ボタンの間の余白を縮める */
+        div.stButton { margin-top: -10px; }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
     # ===== 保存ボタン（任意で位置情報あり/なしどちらでも保存） =====
     if st.button("保存", disabled=is_approved_holiday):
