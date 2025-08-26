@@ -280,10 +280,20 @@ st.subheader("📆 集計対象月の選択")
 def get_month_period(selected_month: int, today: date):
     """
     月度: 26日～翌月25日
-    - 'selected_month' は「締めの月」（例: 1=12/26～1/25, 12=11/26～12/25）
-    - 未来月も当年として扱う（＝前年へ寄せない）
+    selected_month は「締めの月」（例: 1=12/26～1/25）
+    26日を起点に “今がどの締め月シーズンか” を判断する
     """
-    base_year = today.year  # ← 年前倒ししない
+    # 26日を越えたら次月を“現在の締め月”として扱うアンカー
+    anchor_year = today.year
+    anchor_month = today.month + (1 if today.day >= 26 else 0)
+    if anchor_month > 12:
+        anchor_month -= 12
+        anchor_year += 1
+
+    base_year = anchor_year
+    # 選択月がアンカー月より大きければ前年
+    if selected_month > anchor_month:
+        base_year -= 1
 
     if selected_month == 1:
         start = pd.to_datetime(f"{base_year-1}-12-26")
@@ -293,9 +303,15 @@ def get_month_period(selected_month: int, today: date):
         end   = pd.to_datetime(f"{base_year}-{selected_month:02d}-25")
     return start, end
 
-default_idx = today_jst().month - 1  # 0〜11
+# デフォルトのラジオ選択も“26日起点”で現在の締め月に合わせる
+_today = today_jst()
+_anchor_m = _today.month + (1 if _today.day >= 26 else 0)
+if _anchor_m > 12:
+    _anchor_m -= 12
+default_idx = _anchor_m - 1  # 0〜11
 selected_month = st.radio("📅 月を選択", list(range(1, 13)), index=default_idx, horizontal=True)
-start_date, end_date = get_month_period(selected_month, today_jst())
+start_date, end_date = get_month_period(selected_month, _today)
+
 st.caption(f"📅 表示期間：{start_date.strftime('%Y/%m/%d')} ～ {end_date.strftime('%Y/%m/%d')}")
 
 def get_open_period(today_d: date):
@@ -1166,27 +1182,6 @@ if is_admin:
 # ==============================
 # 社員UI
 # ==============================
-# ========= クエリパラメータからGPS結果を受け取る =========
-# （ポップアップが成功/失敗時に ?gps=lat,lng または ?gps_error=... を付けて親をリロードします）
-qs = st.query_params
-gps_q = qs.get("gps")
-gps_err_q = qs.get("gps_error")
-
-if gps_q:
-    st.session_state.manual_gps = str(gps_q)
-    st.session_state.gps_error = ""
-    st.session_state.gps_click_token = 0
-    st.query_params.clear()
-    st.success(f"位置情報を取得しました：{st.session_state.manual_gps}")
-
-elif gps_err_q:
-    st.session_state.manual_gps = ""
-    st.session_state.gps_error = str(gps_err_q)
-    st.session_state.gps_click_token = 0
-    st.query_params.clear()
-    st.warning(f"位置情報の取得に失敗：{st.session_state.gps_error}")
-# ========= ここまで =========
-
 st.header("📝 出退勤の入力")
 
 # 社員UI：日付入力（前月ロックのUX強化）
@@ -1236,41 +1231,34 @@ gps_val = components.html(
 <script>
 (function(){
   const TOKEN = "__TOKEN__";
+  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
 
-  // Streamlit に値を返す関数
-  const sendToStreamlit = (val) => {
+  // Streamlit に値を返す
+  const send = (val) => {
     try {
       window.parent.postMessage(
         { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val },
         "*"
       );
-    } catch (e) {}
+    } catch(e) {}
   };
 
-  // 位置情報結果をポップアップから受け取る（★ 親はリロードしない）
-  window.addEventListener("message", function(ev){
-    const d = ev && ev.data ? ev.data : {};
-    if (d.type === "gps" && typeof d.value === "string") {
-      sendToStreamlit(d.value);            // "lat,lng"
-    } else if (d.type === "gps_error" && typeof d.value === "string") {
-      sendToStreamlit("ERROR:" + d.value); // "ERROR:..."
-    }
-  }, false);
-
-  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
-
-  // HTTPSチェック（任意）
-  try {
-    if (location.protocol !== "https:" && location.hostname !== "localhost") {
-      sendToStreamlit("ERROR:HTTPS_REQUIRED");
-      return;
-    }
-  } catch (e) {}
-
-  // ポップアップで位置取得（★ 親はリロードしない）
+  // ポップアップを開く
   let w = window.open("", "_blank", "width=360,height=280");
-  if (!w) { sendToStreamlit("ERROR:POPUP_BLOCKED"); return; }
+  if (!w) { send("ERROR:POPUP_BLOCKED"); return; }
 
+  // ポップアップ→親への結果受信（1回だけ）
+  const onMsg = (ev) => {
+    const d = ev && ev.data ? ev.data : {};
+    if (d.type === "gps") {
+      send(d.value); window.removeEventListener("message", onMsg); try { w.close(); } catch(e) {}
+    } else if (d.type === "gps_error") {
+      send("ERROR:" + d.value); window.removeEventListener("message", onMsg); try { w.close(); } catch(e) {}
+    }
+  };
+  window.addEventListener("message", onMsg, false);
+
+  // ポップアップの中身（成功/失敗で window.opener.postMessage(...) する）
   w.document.write(`<!doctype html><html><head>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>位置情報の取得</title>
@@ -1280,28 +1268,26 @@ gps_val = components.html(
     <div id="s" style="white-space:pre-wrap"></div>
     <script>
       (function(){
-        const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
-
+        const say = (t) => { try { document.getElementById('s').textContent = t; } catch(_) {} };
         if (!('geolocation' in navigator)) {
-          window.opener && window.opener.postMessage({ type:"gps_error", value:"GEO_UNSUPPORTED" }, "*");
           say("この端末/ブラウザでは位置情報が使えません。");
+          try { window.opener.postMessage({ type:"gps_error", value:"GEO_UNSUPPORTED" }, "*"); } catch(e) {}
           setTimeout(()=>window.close(), 700);
           return;
         }
-
         navigator.geolocation.getCurrentPosition(function(pos){
           const v = pos.coords.latitude + "," + pos.coords.longitude;
-          window.opener && window.opener.postMessage({ type:"gps", value: v }, "*");
           say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-          setTimeout(()=>window.close(), 350);
+          try { window.opener.postMessage({ type:"gps", value: v }, "*"); } catch(e) {}
+          setTimeout(()=>window.close(), 400);
         }, function(err){
           const msg = (err && err.message) ? err.message : "GEO_ERROR";
-          window.opener && window.opener.postMessage({ type:"gps_error", value: msg }, "*");
           say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
+          try { window.opener.postMessage({ type:"gps_error", value: msg }, "*"); } catch(e) {}
           setTimeout(()=>window.close(), 900);
         }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
       })();
-    <\/script>
+    <\\/script>
   </body></html>`);
 })();
 </script>
@@ -1309,6 +1295,7 @@ gps_val = components.html(
     height=0
 )
 
+# ← 直後に“セッションへ反映”ブロックを必ず残す
 if isinstance(gps_val, str) and gps_val:
     if gps_val.startswith("ERROR:"):
         st.session_state.gps_error = gps_val.replace("ERROR:", "")
