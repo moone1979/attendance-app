@@ -281,11 +281,9 @@ def get_month_period(selected_month: int, today: date):
     """
     月度: 26日～翌月25日
     - 'selected_month' は「締めの月」（例: 1=12/26～1/25, 12=11/26～12/25）
-    - 今日基準で、未来の月を選んだ場合は前年にアンカー
+    - 未来月も当年として扱う（＝前年へ寄せない）
     """
-    base_year = today.year
-    if selected_month > today.month:
-        base_year -= 1  # 未来月は前年に寄せる
+    base_year = today.year  # ← 年前倒ししない
 
     if selected_month == 1:
         start = pd.to_datetime(f"{base_year-1}-12-26")
@@ -1237,27 +1235,42 @@ gps_val = components.html(
 <div id="gps-hook" style="display:none"></div>
 <script>
 (function(){
-  // Python から埋め込むクリックトークン（値が変わったときだけ動作）
   const TOKEN = "__TOKEN__";
 
-  // トークン未設定なら何もしない
-  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") {
-    return;
-  }
-
-  // 位置情報は iframe だとブロックされがちなので別ウィンドウで実行
-  let w = window.open("", "_blank", "width=360,height=280");
-  // ポップアップがブロックされた場合は親を ?gps_error=POPUP_BLOCKED でリロード
-  if (!w) {
+  // Streamlit に値を返す関数
+  const sendToStreamlit = (val) => {
     try {
-      const topWin = window.top;
-      const base = topWin.location.origin + topWin.location.pathname;
-      topWin.location.href = base + "?gps_error=" + encodeURIComponent("POPUP_BLOCKED");
-    } catch (e) { /* ignore */ }
-    return;
-  }
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val },
+        "*"
+      );
+    } catch (e) {}
+  };
 
-  // ポップアップの中身（成功/失敗で親のURLを書き換えて閉じる）
+  // 位置情報結果をポップアップから受け取る（★ 親はリロードしない）
+  window.addEventListener("message", function(ev){
+    const d = ev && ev.data ? ev.data : {};
+    if (d.type === "gps" && typeof d.value === "string") {
+      sendToStreamlit(d.value);            // "lat,lng"
+    } else if (d.type === "gps_error" && typeof d.value === "string") {
+      sendToStreamlit("ERROR:" + d.value); // "ERROR:..."
+    }
+  }, false);
+
+  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
+
+  // HTTPSチェック（任意）
+  try {
+    if (location.protocol !== "https:" && location.hostname !== "localhost") {
+      sendToStreamlit("ERROR:HTTPS_REQUIRED");
+      return;
+    }
+  } catch (e) {}
+
+  // ポップアップで位置取得（★ 親はリロードしない）
+  let w = window.open("", "_blank", "width=360,height=280");
+  if (!w) { sendToStreamlit("ERROR:POPUP_BLOCKED"); return; }
+
   w.document.write(`<!doctype html><html><head>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>位置情報の取得</title>
@@ -1269,33 +1282,23 @@ gps_val = components.html(
       (function(){
         const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
 
-        function redirectWith(param, value){
-          try {
-            const topWin = window.opener && window.opener.top ? window.opener.top : null;
-            if (topWin && topWin.location) {
-              const base = topWin.location.origin + topWin.location.pathname;
-              topWin.location.href = base + "?" + param + "=" + encodeURIComponent(value);
-            }
-          } catch (e) {}
-        }
-
         if (!('geolocation' in navigator)) {
+          window.opener && window.opener.postMessage({ type:"gps_error", value:"GEO_UNSUPPORTED" }, "*");
           say("この端末/ブラウザでは位置情報が使えません。");
-          redirectWith("gps_error","GEO_UNSUPPORTED");
-          setTimeout(()=>window.close(), 600);
+          setTimeout(()=>window.close(), 700);
           return;
         }
 
         navigator.geolocation.getCurrentPosition(function(pos){
           const v = pos.coords.latitude + "," + pos.coords.longitude;
+          window.opener && window.opener.postMessage({ type:"gps", value: v }, "*");
           say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-          redirectWith("gps", v);
-          setTimeout(()=>window.close(), 300);
+          setTimeout(()=>window.close(), 350);
         }, function(err){
           const msg = (err && err.message) ? err.message : "GEO_ERROR";
+          window.opener && window.opener.postMessage({ type:"gps_error", value: msg }, "*");
           say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
-          redirectWith("gps_error", msg);
-          setTimeout(()=>window.close(), 700);
+          setTimeout(()=>window.close(), 900);
         }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
       })();
     <\/script>
@@ -1306,7 +1309,17 @@ gps_val = components.html(
     height=0
 )
 
-# Python側で使う値（以降の保存処理で使用）
+if isinstance(gps_val, str) and gps_val:
+    if gps_val.startswith("ERROR:"):
+        st.session_state.gps_error = gps_val.replace("ERROR:", "")
+        st.session_state.manual_gps = ""
+    else:
+        st.session_state.manual_gps = gps_val
+        st.session_state.gps_error = ""
+    st.session_state.gps_click_token = 0
+    st.rerun()
+
+# Python側で使う値（保存処理で使用）
 effective_gps = st.session_state.get("manual_gps", "")
 lat, lng = "", ""
 if isinstance(effective_gps, str) and "," in effective_gps:
