@@ -1465,7 +1465,7 @@ else:
                 st.rerun()
 
     # ▼ここで余白を詰める
-    st.markdown("<div style='margin-bottom:-1rem;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-bottom:-2rem;'></div>", unsafe_allow_html=True)
 
     # ===== 保存ボタン（任意で位置情報あり/なしどちらでも保存） =====
     if st.button("保存", disabled=is_approved_holiday):
