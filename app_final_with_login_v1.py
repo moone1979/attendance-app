@@ -200,6 +200,20 @@ def read_login_csv(path: str) -> pd.DataFrame:
 
 df_login = read_login_csv(LOGIN_CSV)
 
+# === クエリからの自動ログイン（一般社員のみ） ===
+qs = st.query_params
+uid_q = qs.get("uid")
+if uid_q and not st.session_state.get("logged_in", False):
+    # 社員マスタから一致行を拾って自動ログイン
+    _auto = df_login[df_login["社員ID"] == uid_q]
+    if not _auto.empty and uid_q != "admin":
+        st.session_state.logged_in = True
+        st.session_state.user_id   = _auto.iloc[0]["社員ID"]
+        st.session_state.user_name = _auto.iloc[0]["氏名"]
+        st.session_state.dept      = _auto.iloc[0].get("部署", "") or ""
+        st.session_state.is_admin  = False
+        # 自動ログイン後にそのまま続行（rerunは不要）
+
 # ==============================
 # セッション初期化 & ログイン
 # ==============================
@@ -250,6 +264,9 @@ if not st.session_state.logged_in:
             st.session_state.user_name = user.iloc[0]["氏名"]
             st.session_state.dept      = user.iloc[0].get("部署", "") or ""
             st.session_state.is_admin  = False
+
+            st.query_params.update({"uid": st.session_state.user_id})
+
             st.rerun()
 
     st.stop()
@@ -1240,38 +1257,22 @@ gps_val = components.html(
 <div id="gps-hook" style="display:none"></div>
 <script>
 (function(){
-  // Python から埋め込むクリックトークン（値が変わったときだけ動作）
   const TOKEN = "__TOKEN__";
+  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
 
-  // Streamlit に値を返すヘルパー
-  function sendToStreamlit(val){
+  // 親URLのクエリを書き換えるヘルパー
+  function redirectWith(param, value){
     try {
-      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val }, "*");
-    } catch(e) {}
+      const topWin = window.top;
+      const url = new URL(topWin.location.href);
+      url.searchParams.set(param, value); // uid 等は既存のまま温存
+      topWin.location.href = url.toString();  // ← 親をリロード（uid保持）
+    } catch (e) {}
   }
 
-  // トークン未設定なら何もしない
-  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") { return; }
-
-  // ポップアップで geolocation を取る（iframe は拒否されやすい）
   let w = window.open("", "_blank", "width=360,height=280");
-  if (!w) {
-    // ブロックされたら即座に値を返す（リロードしない）
-    sendToStreamlit("ERROR:POPUP_BLOCKED");
-    return;
-  }
+  if (!w) { redirectWith("gps_error","POPUP_BLOCKED"); return; }
 
-  // 親（＝この iframe）へ結果を postMessage で返す
-  window.addEventListener("message", function(ev){
-    const d = ev && ev.data ? ev.data : {};
-    if (d.type === "gps") {
-      sendToStreamlit(d.value);   // "lat,lng"
-    } else if (d.type === "gps_error") {
-      sendToStreamlit("ERROR:" + d.value);
-    }
-  }, false);
-
-  // ポップアップの中身：成功/失敗で opener（＝この iframe）に postMessage して自動クローズ
   w.document.write(`<!doctype html><html><head>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>位置情報の取得</title>
@@ -1282,22 +1283,28 @@ gps_val = components.html(
     <script>
       (function(){
         const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
-        if (!('geolocation' in navigator)) {
-          say("この端末/ブラウザでは位置情報が使えません。");
-          try { window.opener.postMessage({ type:"gps_error", value:"GEO_UNSUPPORTED" }, "*"); } catch(e){}
-          setTimeout(()=>window.close(), 700);
-          return;
+        function back(param, value){
+          try{
+            const topWin = window.opener ? window.opener.top : null;
+            if (topWin){
+              const url = new URL(topWin.location.href);
+              url.searchParams.set(param, value);  // uidなど既存のクエリは温存
+              topWin.location.href = url.toString();
+            }
+          }catch(e){}
+          setTimeout(()=>window.close(), 300);
         }
+
+        if (!('geolocation' in navigator)) { say("この端末/ブラウザでは位置情報が使えません。"); back("gps_error","GEO_UNSUPPORTED"); return; }
+
         navigator.geolocation.getCurrentPosition(function(pos){
           const v = pos.coords.latitude + "," + pos.coords.longitude;
           say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-          try { window.opener.postMessage({ type:"gps", value: v }, "*"); } catch(e){}
-          setTimeout(()=>window.close(), 400);
+          back("gps", v);
         }, function(err){
           const msg = (err && err.message) ? err.message : "GEO_ERROR";
           say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
-          try { window.opener.postMessage({ type:"gps_error", value: msg }, "*"); } catch(e){}
-          setTimeout(()=>window.close(), 900);
+          back("gps_error", msg);
         }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
       })();
     <\/script>
