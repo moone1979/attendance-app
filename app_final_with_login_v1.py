@@ -1284,7 +1284,7 @@ if "gps_click_token" not in st.session_state:
 st.markdown("""
 <style>
 /* 位置情報セクションの“下”のデフォ余白を詰める */
-.gps-block { margin-bottom: -14px !important; }
+.gps-block { margin-bottom: -20px !important; }
 
 /* 念のため：このセクション内のボタンの上余白もゼロに */
 .gps-block .stButton>button { margin-top: 0 !important; }
