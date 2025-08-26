@@ -1177,13 +1177,14 @@ gps_err_q = qs.get("gps_error")
 if gps_q:
     st.session_state.manual_gps = str(gps_q)
     st.session_state.gps_error = ""
-    # 取り込み後はクエリを消しておく（F5などでも再適用されないように）
+    st.session_state.gps_click_token = 0
     st.query_params.clear()
     st.success(f"位置情報を取得しました：{st.session_state.manual_gps}")
 
 elif gps_err_q:
     st.session_state.manual_gps = ""
     st.session_state.gps_error = str(gps_err_q)
+    st.session_state.gps_click_token = 0
     st.query_params.clear()
     st.warning(f"位置情報の取得に失敗：{st.session_state.gps_error}")
 # ========= ここまで =========
@@ -1304,18 +1305,6 @@ gps_val = components.html(
 """.replace("__TOKEN__", TOKEN_VAL),
     height=0
 )
-
-# JSからの結果をセッションへ反映
-if isinstance(gps_val, str) and gps_val:
-    if gps_val.startswith("ERROR:"):
-        st.session_state.gps_error = gps_val.replace("ERROR:", "")
-        st.session_state.manual_gps = ""
-    else:
-        st.session_state.manual_gps = gps_val
-        st.session_state.gps_error = ""
-    # ★ ここを追加：次ランでポップアップを再起動させない
-    st.session_state.gps_click_token = 0
-    st.rerun()
 
 # Python側で使う値（以降の保存処理で使用）
 effective_gps = st.session_state.get("manual_gps", "")
