@@ -1732,3 +1732,13 @@ with st.expander("📅 休日・休暇申請", expanded=False):
                 st.success(f"{removed} 件の『申請済』を取り消しました。")
                 time.sleep(1)
                 st.rerun()
+
+# ===== 休日・休暇申請の直下に当月の合計残業を表示 =====
+df_self_month = df[
+    (df["社員ID"] == st.session_state.user_id) &
+    (df["日付"] >= start_date) &
+    (df["日付"] <= end_date)
+].copy()
+
+total_ot_hours = float(df_self_month["残業時間"].fillna(0).astype(float).sum())
+st.markdown(f"**⏱️ 当月の合計残業時間：{format_hours_minutes(total_ot_hours)}**")
