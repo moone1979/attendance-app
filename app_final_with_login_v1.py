@@ -214,6 +214,36 @@ if uid_q and not st.session_state.get("logged_in", False):
         st.session_state.is_admin  = False
         # 自動ログイン後にそのまま続行（rerunは不要）
 
+# === クエリからのGPS取り込み（URLに gps / gps_error があればセッションへ反映） ===
+qs = st.query_params
+gps_q = qs.get("gps")
+gps_err_q = qs.get("gps_error")
+
+if gps_q or gps_err_q:
+    # セッションキー初期化（無ければ）
+    if "manual_gps" not in st.session_state:
+        st.session_state.manual_gps = ""
+    if "gps_error" not in st.session_state:
+        st.session_state.gps_error = ""
+    if "gps_click_token" not in st.session_state:
+        st.session_state.gps_click_token = 0.0
+
+    if gps_q:
+        st.session_state.manual_gps = gps_q.strip()          # "lat,lng"
+        st.session_state.gps_error = ""
+    elif gps_err_q:
+        st.session_state.manual_gps = ""
+        st.session_state.gps_error = gps_err_q
+
+    # 次回ポップアップが再起動しないようにトークンをリセット
+    st.session_state.gps_click_token = 0.0
+
+    # URLをきれいに（uid等は残しつつ gps クエリだけ除去）
+    new_qs = {k: v for k, v in qs.items() if k not in ("gps", "gps_error")}
+    st.query_params.clear()
+    if new_qs:
+        st.query_params.update(new_qs)
+
 # ==============================
 # セッション初期化 & ログイン
 # ==============================
