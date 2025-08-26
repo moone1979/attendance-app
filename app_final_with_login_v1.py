@@ -1295,6 +1295,9 @@ gps_val = components.html(
     height=0
 )
 
+# ★ デバッグログ
+st.write({"gps_val": gps_val, "state": dict(st.session_state)})
+
 # ← 直後に“セッションへ反映”ブロックを必ず残す
 if isinstance(gps_val, str) and gps_val:
     if gps_val.startswith("ERROR:"):
