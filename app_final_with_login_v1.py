@@ -18,10 +18,10 @@ st.set_page_config(page_title="出退勤アプリ（ログイン式）", layout=
 
 st.markdown("""
 <style>
-/* デバッグ用マーカー */
+/* デバッグ表示用 */
 .g-cmark{ outline:2px dashed #00d5ff !important; }
 
-/* 1) マーカー直後の element-container を潰す */
+/* (A) コンポーネント直後の element-container を潰す（iframe含む） */
 .g-cmark + div[data-testid="element-container"]{
   margin:0 !important; padding:0 !important;
   height:0 !important; min-height:0 !important; overflow:hidden !important;
@@ -31,14 +31,32 @@ st.markdown("""
   display:block !important; visibility:hidden !important; pointer-events:none !important;
 }
 
-/* 2) マーカーを含む縦ブロックの “次の stVerticalBlock” を詰める */
-div[data-testid="stVerticalBlock"]:has(.g-cmark)
-  + div[data-testid="stVerticalBlock"]{
-  margin-top:0 !important;
-  padding-top:0 !important;
+/* (B) マーカーを含む “縦ブロックそのもの” のボトム余白をゼロに */
+div[data-testid="stVerticalBlock"]:has(.g-cmark){
+  margin-bottom:0 !important;
+  padding-bottom:0 !important;
 }
 
-/* 3) その次ブロック内に自動で入る spacer を潰す */
+/* (C) その縦ブロック内の横ブロック（columns）のボトム余白もゼロに */
+div[data-testid="stVerticalBlock"]:has(.g-cmark)
+  > div[data-testid="stHorizontalBlock"]{
+  margin-bottom:0 !important;
+  padding-bottom:0 !important;
+}
+
+/* (D) その縦ブロック内に入る spacer を潰す */
+div[data-testid="stVerticalBlock"]:has(.g-cmark)
+  div[data-testid="stSpacer"]{
+  height:0 !important; margin:0 !important; padding:0 !important;
+}
+
+/* (E) “次の縦ブロック” のトップ余白をゼロに（間の段差をなくす） */
+div[data-testid="stVerticalBlock"]:has(.g-cmark)
+  + div[data-testid="stVerticalBlock"]{
+  margin-top:0 !important; padding-top:0 !important;
+}
+
+/* (F) その次ブロック内の spacer も保険でゼロに */
 div[data-testid="stVerticalBlock"]:has(.g-cmark)
   + div[data-testid="stVerticalBlock"] div[data-testid="stSpacer"]{
   height:0 !important; margin:0 !important; padding:0 !important;
