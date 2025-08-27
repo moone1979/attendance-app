@@ -1237,27 +1237,38 @@ if is_admin:
 
 st.markdown("""
 <style>
-/* 親コンテナ（アンカー直下）の縦ギャップを詰める */
+/* 1) アンカーを含む親コンテナの row-gap を縮める（あなたの既存ルールはそのままでOK） */
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
 div.block-container:has(> div[data-testid="stVerticalBlock"] > .g-tight-anchor) {
   row-gap: .25rem !important;
 }
 
-/* ボタン上の余白ゼロ */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) .stButton > button {
-  margin-top: 0 !important;
+/* 2) その“親の直下”に置かれる Streamlit の spacer を潰す（←これが強敵） */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) > div[data-testid="stSpacer"]{
+  height: 0 !important;
 }
 
-/* expander の頭を少し詰める */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander {
-  margin-top: 2px !important;
+/* 3) components.html(iframe) の element-container ごと余白をゼロにする */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) div[data-testid="element-container"]:has(> iframe){
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
-/* components.html の iframe を極小化 */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) iframe {
+/* 4) 念のため iframe 自体も極小化（既存と被ってもOK） */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) iframe{
   width: 0 !important;
   height: 0 !important;
   display: block !important;
+}
+
+/* 5) セクション見出しの下マージンも少し詰める */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) h3{
+  margin-bottom: .25rem !important;
+}
+
+/* 6) expander の頭（トップマージン）をさらに詰める */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander{
+  margin-top: 0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
