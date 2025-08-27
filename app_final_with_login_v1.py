@@ -14,6 +14,45 @@ JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 def today_jst():
     return datetime.now(JST).date()
 
+st.markdown("""
+<style>
+/* ---- 本番用：デバッグ線は消す ---- */
+.g-cmark{
+  display:block !important;
+  height:0 !important;
+  margin:0 !important;
+  padding:0 !important;
+  border:0 !important;
+  outline: none !important;  /* ← これで水色の線が消えます */
+}
+
+/* ---- ここが本命（余白を潰す） ---- */
+.g-cmark + div[data-testid="element-container"]{
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.g-cmark + div[data-testid="element-container"] iframe{
+  width: 0 !important;
+  height: 0 !important;
+  display: block !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+.g-cmark + div[data-testid="element-container"] > div{
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  border: 0 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.set_page_config(page_title="出退勤アプリ（ログイン式）", layout="wide")
 
 # ==============================
@@ -1234,40 +1273,6 @@ if is_admin:
 
     # 管理者分岐の最後に stop（社員UIに進ませない）
     st.stop()
-
-st.markdown("""
-<style>
-/* ===== Debug: 枠線で可視化 ===== */
-.g-cmark{ outline: 2px dashed #00d5ff !important; }  /* マーカー自体 */
-.g-cmark + div[data-testid="element-container"]{ outline: 2px solid #ff7b00 !important; } /* 直後=components親 */
-
-/* ===== ここが本命：マーカー直後の element-container をゼロ化 ===== */
-.g-cmark + div[data-testid="element-container"]{
-  margin: 0 !important;
-  padding: 0 !important;
-  height: 0 !important;
-  min-height: 0 !important;
-  overflow: hidden !important;
-}
-
-/* 中の iframe も完全に潰す（保険） */
-.g-cmark + div[data-testid="element-container"] iframe{
-  width: 0 !important;
-  height: 0 !important;
-  display: block !important;
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
-
-/* element-container 内側の余白を作る子がいても潰す（保険） */
-.g-cmark + div[data-testid="element-container"] > div{
-  margin: 0 !important;
-  padding: 0 !important;
-  height: 0 !important;
-  min-height: 0 !important;
-}
-</style>
-""", unsafe_allow_html=True)
 
 # ==============================
 # 社員UI
