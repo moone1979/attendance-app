@@ -1237,89 +1237,34 @@ if is_admin:
 
 st.markdown("""
 <style>
-/* === デバッグ可視化 === */
+/* ===== Debug: 枠線で可視化 ===== */
+.g-cmark{ outline: 2px dashed #00d5ff !important; }  /* マーカー自体 */
+.g-cmark + div[data-testid="element-container"]{ outline: 2px solid #ff7b00 !important; } /* 直後=components親 */
 
-/* アンカーを“見える化” */
-.g-tight-anchor{
-  display:block !important;
-  height:4px !important;
-  background:rebeccapurple !important;
-  margin:2px 0 !important;
-}
-
-/* 1) アンカーを含む stVerticalBlock の親を赤枠で表示（直下/markdown経由どちらも）*/
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor){
-  outline:2px solid #ff3b30 !important;      /* 赤 */
-  outline-offset:2px !important;
-  position:relative;
-}
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor)::before,
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor)::before{
-  content:"PARENT hits :has(.g-tight-anchor)";
-  position:absolute; top:-10px; left:0;
-  font-size:10px; color:#ff3b30; background:#1e1e1e; padding:0 4px;
+/* ===== ここが本命：マーカー直後の element-container をゼロ化 ===== */
+.g-cmark + div[data-testid="element-container"]{
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
 }
 
-/* 2) Markdown ラッパ（アンカーがこの中に入っていないか？）*/
-div[data-testid="stMarkdown"]{
-  outline:2px dashed #0a84ff !important;     /* 青 */
-  outline-offset:2px !important;
-  position:relative;
-}
-div[data-testid="stMarkdown"]::before{
-  content:"stMarkdown";
-  position:absolute; top:-10px; left:0;
-  font-size:10px; color:#0a84ff; background:#1e1e1e; padding:0 4px;
+/* 中の iframe も完全に潰す（保険） */
+.g-cmark + div[data-testid="element-container"] iframe{
+  width: 0 !important;
+  height: 0 !important;
+  display: block !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
-/* 3) 各要素の element-container を緑枠で */
-div[data-testid="element-container"]{
-  outline:1px solid #30d158 !important;      /* 緑 */
-  outline-offset:1px !important;
-  position:relative;
-}
-div[data-testid="element-container"]::before{
-  content:"element-container";
-  position:absolute; top:-10px; left:0;
-  font-size:10px; color:#30d158; background:#1e1e1e; padding:0 4px;
-}
-
-/* 4) Spacer（余白）を黄色で帯表示 */
-div[data-testid="stSpacer"]{
-  background:rgba(255, 214, 10, .3) !important;  /* 黄 */
-  min-height:6px !important;
-  position:relative;
-}
-div[data-testid="stSpacer"]::before{
-  content:"stSpacer";
-  position:absolute; top:-10px; left:0;
-  font-size:10px; color:#ffd60a; background:#1e1e1e; padding:0 4px;
-}
-
-/* 5) components.html の iframe を水色の細枠で */
-iframe{
-  outline:1px dotted #64d2ff !important;     /* 水色 */
-  outline-offset:1px !important;
-}
-
-/* === 実際の詰めロジック（確認のために残す）=== */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor){
-  gap:.25rem !important;
-  row-gap:.25rem !important;
-}
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) > div[data-testid="stSpacer"],
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) > div[data-testid="stSpacer"]{
-  height:0 !important;
-}
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) div[data-testid="element-container"]:has(> iframe),
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) div[data-testid="element-container"]:has(> iframe){
-  margin:0 !important; padding:0 !important;
-}
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander,
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) details.st-expander{
-  margin-top:0 !important;
+/* element-container 内側の余白を作る子がいても潰す（保険） */
+.g-cmark + div[data-testid="element-container"] > div{
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1371,9 +1316,6 @@ if "gps_click_token" not in st.session_state:
 
 # ===== ここから “ギャップを詰めたい範囲” を本物の親で囲む =====
 with st.container():
-    # 親を特定するためのアンカー（1行目に置く）
-    st.markdown('<div class="g-tight-anchor"></div>', unsafe_allow_html=True)
-
     st.markdown("### 📍 位置情報")
     col_g1, col_g2 = st.columns([1, 3])
     with col_g1:
@@ -1398,6 +1340,7 @@ with st.container():
 
     # ---- geolocation 実行用（keyは渡さない）----
     TOKEN_VAL = str(st.session_state.get("gps_click_token", 0))
+    st.markdown('<div class="g-cmark"></div>', unsafe_allow_html=True)
     gps_val = components.html(
     """
     <div id="gps-hook" style="display:none"></div>
