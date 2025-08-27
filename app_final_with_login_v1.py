@@ -61,6 +61,28 @@ div[data-testid="stVerticalBlock"]:has(.g-cmark)
   + div[data-testid="stVerticalBlock"] div[data-testid="stSpacer"]{
   height:0 !important; margin:0 !important; padding:0 !important;
 }
+
+/* 1) マーカーを含む縦ブロック内の “全ての element-container の下マージン” をゼロに */
+div[data-testid="stVerticalBlock"]:has(.g-cmark) div[data-testid="element-container"]{
+  margin-bottom:0 !important;
+  padding-bottom:0 !important;
+}
+
+/* 2) その “次の縦ブロック” 配下にある Expander/Accordion の上マージンをゼロに */
+div[data-testid="stVerticalBlock"]:has(.g-cmark)
+  + div[data-testid="stVerticalBlock"] .stExpander{
+  margin-top:0 !important;
+}
+
+/* （保険）Accordion 実装系でも同様に消す */
+div[data-testid="stVerticalBlock"]:has(.g-cmark)
+  + div[data-testid="stVerticalBlock"] [data-testid="stExpander"]{
+  margin-top:0 !important;
+}
+
+/* 3) グローバルに “要素間の既定の段落” を少しだけ詰めたい場合（任意）
+   ※ 画面全体に効く。きつければコメントアウトでもOK。 */
+div[data-testid="element-container"]{ margin-bottom: .25rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
