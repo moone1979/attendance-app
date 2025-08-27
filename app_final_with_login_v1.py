@@ -18,71 +18,19 @@ st.set_page_config(page_title="出退勤アプリ（ログイン式）", layout=
 
 st.markdown("""
 <style>
-/* デバッグ表示用 */
-.g-cmark{ outline:2px dashed #00d5ff !important; }
-
-/* (A) コンポーネント直後の element-container を潰す（iframe含む） */
-.g-cmark + div[data-testid="element-container"]{
-  margin:0 !important; padding:0 !important;
-  height:0 !important; min-height:0 !important; overflow:hidden !important;
+.material-icons,
+.material-icons-outlined,
+.material-icons-round,
+.material-icons-sharp,
+.material-icons-two-tone {
+  font-family: 'Material Icons' !important;
+  font-weight: normal !important;
+  font-style: normal !important;
+  font-size: inherit;
+  line-height: 1;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
 }
-.g-cmark + div[data-testid="element-container"] iframe{
-  width:0 !important; height:0 !important;
-  display:block !important; visibility:hidden !important; pointer-events:none !important;
-}
-
-/* (B) マーカーを含む “縦ブロックそのもの” のボトム余白をゼロに */
-div[data-testid="stVerticalBlock"]:has(.g-cmark){
-  margin-bottom:0 !important;
-  padding-bottom:0 !important;
-}
-
-/* (C) その縦ブロック内の横ブロック（columns）のボトム余白もゼロに */
-div[data-testid="stVerticalBlock"]:has(.g-cmark)
-  > div[data-testid="stHorizontalBlock"]{
-  margin-bottom:0 !important;
-  padding-bottom:0 !important;
-}
-
-/* (D) その縦ブロック内に入る spacer を潰す */
-div[data-testid="stVerticalBlock"]:has(.g-cmark)
-  div[data-testid="stSpacer"]{
-  height:0 !important; margin:0 !important; padding:0 !important;
-}
-
-/* (E) “次の縦ブロック” のトップ余白をゼロに（間の段差をなくす） */
-div[data-testid="stVerticalBlock"]:has(.g-cmark)
-  + div[data-testid="stVerticalBlock"]{
-  margin-top:0 !important; padding-top:0 !important;
-}
-
-/* (F) その次ブロック内の spacer も保険でゼロに */
-div[data-testid="stVerticalBlock"]:has(.g-cmark)
-  + div[data-testid="stVerticalBlock"] div[data-testid="stSpacer"]{
-  height:0 !important; margin:0 !important; padding:0 !important;
-}
-
-/* 1) マーカーを含む縦ブロック内の “全ての element-container の下マージン” をゼロに */
-div[data-testid="stVerticalBlock"]:has(.g-cmark) div[data-testid="element-container"]{
-  margin-bottom:0 !important;
-  padding-bottom:0 !important;
-}
-
-/* 2) その “次の縦ブロック” 配下にある Expander/Accordion の上マージンをゼロに */
-div[data-testid="stVerticalBlock"]:has(.g-cmark)
-  + div[data-testid="stVerticalBlock"] .stExpander{
-  margin-top:0 !important;
-}
-
-/* （保険）Accordion 実装系でも同様に消す */
-div[data-testid="stVerticalBlock"]:has(.g-cmark)
-  + div[data-testid="stVerticalBlock"] [data-testid="stExpander"]{
-  margin-top:0 !important;
-}
-
-/* 3) グローバルに “要素間の既定の段落” を少しだけ詰めたい場合（任意）
-   ※ 画面全体に効く。きつければコメントアウトでもOK。 */
-div[data-testid="element-container"]{ margin-bottom: .25rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1375,85 +1323,84 @@ with st.container():
             st.caption("未取得です（必要なら上のボタンを押してください）")
 
     # ---- geolocation 実行用（keyは渡さない）----
-    TOKEN_VAL = str(st.session_state.get("gps_click_token", 0))
-    st.markdown('<div class="g-cmark"></div>', unsafe_allow_html=True)
-    gps_val = components.html(
-    """
-    <div id="gps-hook" style="display:none"></div>
-    <script>
-    (function(){
-      const TOKEN = "__TOKEN__";
-      if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
+    TOKEN_VAL = float(st.session_state.get("gps_click_token", 0) or 0)
 
-      // 親URLのクエリを書き換えるヘルパー
-      function redirectWith(param, value){
-        try {
-          const topWin = window.top;
-          const url = new URL(topWin.location.href);
-          url.searchParams.set(param, value); // uid 等は既存のまま温存
-          topWin.location.href = url.toString();  // ← 親をリロード（uid保持）
-        } catch (e) {}
-      }
+    # ★ トークンが有効な時だけコンポーネントを描画する
+    if TOKEN_VAL > 0:
+        st.markdown('<div class="g-cmark"></div>', unsafe_allow_html=True)
+        gps_val = components.html(
+            """
+            <div id="gps-hook" style="display:none"></div>
+            <script>
+            (function(){
+              const TOKEN = "__TOKEN__";
+              if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
 
-      let w = window.open("", "_blank", "width=360,height=280");
-      if (!w) { redirectWith("gps_error","POPUP_BLOCKED"); return; }
-
-      w.document.write(`<!doctype html><html><head>
-        <meta name="viewport" content="width=device-width,initial-scale=1"/>
-        <title>位置情報の取得</title>
-      </head>
-      <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
-        <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
-        <div id="s" style="white-space:pre-wrap"></div>
-        <script>
-          (function(){
-            const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
-            function back(param, value){
-              try{
-                const topWin = window.opener ? window.opener.top : null;
-                if (topWin){
+              function redirectWith(param, value){
+                try {
+                  const topWin = window.top;
                   const url = new URL(topWin.location.href);
-                  url.searchParams.set(param, value);  // uidなど既存のクエリは温存
+                  url.searchParams.set(param, value);
                   topWin.location.href = url.toString();
-                }
-              }catch(e){}
-              setTimeout(()=>window.close(), 300);
-            }
+                } catch (e) {}
+              }
+              let w = window.open("", "_blank", "width=360,height=280");
+              if (!w) { redirectWith("gps_error","POPUP_BLOCKED"); return; }
 
-            if (!('geolocation' in navigator)) { say("この端末/ブラウザでは位置情報が使えません。"); back("gps_error","GEO_UNSUPPORTED"); return; }
+              w.document.write(`<!doctype html><html><head>
+                <meta name="viewport" content="width=device-width,initial-scale=1"/>
+                <title>位置情報の取得</title>
+              </head>
+              <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
+                <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
+                <div id="s" style="white-space:pre-wrap"></div>
+                <script>
+                  (function(){
+                    const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
+                    function back(param, value){
+                      try{
+                        const topWin = window.opener ? window.opener.top : null;
+                        if (topWin){
+                          const url = new URL(topWin.location.href);
+                          url.searchParams.set(param, value);
+                          topWin.location.href = url.toString();
+                        }
+                      }catch(e){}
+                      setTimeout(()=>window.close(), 300);
+                    }
 
-            navigator.geolocation.getCurrentPosition(function(pos){
-              const v = pos.coords.latitude + "," + pos.coords.longitude;
-              say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-              back("gps", v);
-            }, function(err){
-              const msg = (err && err.message) ? err.message : "GEO_ERROR";
-              say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
-              back("gps_error", msg);
-            }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
-          })();
-        <\/script>
-      </body></html>`);
-    })();
-    </script>
-    """.replace("__TOKEN__", TOKEN_VAL),
-        height=0
-    )
+                    if (!('geolocation' in navigator)) { say("この端末/ブラウザでは位置情報が使えません。"); back("gps_error","GEO_UNSUPPORTED"); return; }
 
-    # ★ デバッグログ（必要なら）
-    # st.write({"gps_val": gps_val, "state": dict(st.session_state)})
+                    navigator.geolocation.getCurrentPosition(function(pos){
+                      const v = pos.coords.latitude + "," + pos.coords.longitude;
+                      say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
+                      back("gps", v);
+                    }, function(err){
+                      const msg = (err && err.message) ? err.message : "GEO_ERROR";
+                      say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
+                      back("gps_error", msg);
+                    }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
+                  })();
+                <\/script>
+              </body></html>`);
+            })();
+            </script>
+            """.replace("__TOKEN__", str(TOKEN_VAL)),
+            height=0
+        )
 
-    # JSからの結果をセッションへ反映（components.html の setComponentValue ハックで値が返る）
-    if isinstance(gps_val, str) and gps_val:
-        if gps_val.startswith("ERROR:"):
-            st.session_state.gps_error = gps_val.replace("ERROR:", "")
-            st.session_state.manual_gps = ""
-        else:
-            st.session_state.manual_gps = gps_val
-            st.session_state.gps_error = ""
-        # 次ランでポップアップが再起動しないようにリセット
-        st.session_state.gps_click_token = 0
-        st.rerun()
+        # 値の受け取り（同じ）
+        if isinstance(gps_val, str) and gps_val:
+            if gps_val.startswith("ERROR:"):
+                st.session_state.gps_error = gps_val.replace("ERROR:", "")
+                st.session_state.manual_gps = ""
+            else:
+                st.session_state.manual_gps = gps_val
+                st.session_state.gps_error = ""
+            st.session_state.gps_click_token = 0
+            st.rerun()
+    # else: TOKENが0の時は何も描画しない（＝空白が一切できない）
+
 
     # Python側で使う値（保存処理で使用）
     effective_gps = st.session_state.get("manual_gps", "")
