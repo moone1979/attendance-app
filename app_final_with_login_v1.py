@@ -42,11 +42,13 @@ CSV_PATH      = os.path.join(DATA_DIR, "attendance_log.csv")
 LOGIN_CSV     = os.path.join(DATA_DIR, "社員ログイン情報.csv")
 HOLIDAY_CSV   = os.path.join(DATA_DIR, "holiday_requests.csv")
 AUDIT_LOG_CSV = os.path.join(DATA_DIR, "holiday_audit_log.csv")
+OVERTIME_CSV = os.path.join(DATA_DIR, "overtime_requests.csv")
 
 LOGIN_COLUMNS   = ["社員ID", "氏名", "部署", "パスワード"]
 ATT_COLUMNS     = ["社員ID", "氏名", "日付", "出勤時刻", "退勤時刻", "緯度", "経度"]
 HOLIDAY_COLUMNS = ["社員ID", "氏名", "申請日", "休暇日", "休暇種類", "備考", "ステータス", "承認者", "承認日時", "却下理由"]
 AUDIT_COLUMNS   = ["timestamp","承認者","社員ID","氏名","休暇日","申請日","旧ステータス","新ステータス","却下理由"]
+OVERTIME_COLUMNS = ["社員ID","氏名","対象日","申請日時","申請残業H","申請理由","ステータス","承認者","承認日時","却下理由"]
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -58,6 +60,9 @@ if not os.path.exists(CSV_PATH):
 
 if not os.path.exists(HOLIDAY_CSV):
     pd.DataFrame(columns=HOLIDAY_COLUMNS).to_csv(HOLIDAY_CSV, index=False, encoding="utf-8-sig")
+
+if not os.path.exists(OVERTIME_CSV):
+    pd.DataFrame(columns=OVERTIME_COLUMNS).to_csv(OVERTIME_CSV, index=False, encoding="utf-8-sig")
 
 # ==============================
 # UTF-8 修復
@@ -92,6 +97,34 @@ def sanitize_for_csv(value: str) -> str:
     if value.startswith(("=", "+", "-", "@")):
         return "'" + value  # シングルクォートで無害化
     return value
+
+# ==============================
+# 残業申請 CSV 操作
+# ==============================
+def read_overtime_csv() -> pd.DataFrame:
+    if not os.path.exists(OVERTIME_CSV):
+        df = pd.DataFrame(columns=OVERTIME_COLUMNS)
+        df.to_csv(OVERTIME_CSV, index=False, encoding="utf-8-sig")
+        return df.copy()
+    for enc in ("utf-8-sig", "utf-8", "cp932"):
+        try:
+            df = pd.read_csv(OVERTIME_CSV, dtype=str, encoding=enc).fillna("")
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        df = pd.read_csv(OVERTIME_CSV, dtype=str, encoding="cp932", encoding_errors="replace").fillna("")
+    for col in OVERTIME_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    return df[OVERTIME_COLUMNS].copy()
+
+def write_overtime_csv(df: pd.DataFrame):
+    df = df.applymap(sanitize_for_csv)
+    for col in OVERTIME_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    safe_write_csv(df[OVERTIME_COLUMNS], OVERTIME_CSV, OVERTIME_COLUMNS)
 
 # ==============================
 # 休日申請 CSV 操作
@@ -474,6 +507,43 @@ df["勤務時間"] = df["勤務時間"].fillna(0).astype(float).round(2)
 df["残業時間"] = df["残業時間"].fillna(0).astype(float).round(2)
 
 # ==============================
+# 承認済み残業計算
+# ==============================
+def apply_approved_overtime(df_att: pd.DataFrame) -> pd.DataFrame:
+    """承認済みの残業申請(OVERTIME_CSV)で、残業時間を上書きする"""
+    ot = read_overtime_csv()
+    if ot.empty:
+        df_att["承認残業時間"] = df_att["残業時間"].astype(float)
+        return df_att
+    # 承認のみ抽出
+    ok = ot[ot["ステータス"] == "承認"].copy()
+    if ok.empty:
+        df_att["承認残業時間"] = df_att["残業時間"].astype(float)
+        return df_att
+    # 型合わせ
+    df2 = df_att.copy()
+    df2["日付_str"] = df2["日付"].dt.strftime("%Y-%m-%d")
+    # key: 社員ID+日付 でマージ
+    df2 = df2.merge(
+        ok[["社員ID","対象日","申請残業H"]].rename(columns={"対象日":"日付_str"}),
+        on=["社員ID","日付_str"], how="left"
+    )
+    # 申請残業H があればそれを優先、無ければ元の残業時間
+    def _pick(row):
+        try:
+            v = float(str(row.get("申請残業H","")).strip()) if str(row.get("申請残業H","")).strip() else None
+        except:
+            v = None
+        # 承認レコードがなければ自動計算値のまま
+        return v if v is not None else float(row["残業時間"])
+    df2["承認残業時間"] = df2.apply(_pick, axis=1).astype(float).round(2)
+    return df2.drop(columns=["申請残業H"])
+
+# 実行
+df = apply_approved_overtime(df)
+
+
+# ==============================
 # 分岐：管理者 or 社員
 # ==============================
 if is_admin:
@@ -529,6 +599,10 @@ if is_admin:
         })
         df_show["勤務H"] = df_show["勤務H"].astype(float).apply(format_hours_minutes)
         df_show["残業H"] = df_show["残業H"].astype(float).apply(format_hours_minutes)
+        df_show["残業H(承認)"] = df_show["承認残業時間"].astype(float).apply(format_hours_minutes)
+
+        # ✅ 合計残業（承認のみ）
+        total_ot = df_admin_user["合計残業時間"].sum()
 
         # ✅ インデックスにしない
         cols = ["日付", "出勤", "退勤", "勤務H", "残業H"]
@@ -677,7 +751,7 @@ if is_admin:
         export_df = export_df.drop(columns=["氏名"], errors="ignore") \
                              .merge(df_login[["社員ID", "氏名"]], on="社員ID", how="left")
         export_df["日付"] = export_df["日付"].dt.strftime("%Y-%m-%d")
-        cols = ["社員ID","氏名","日付","出勤時刻","退勤時刻","勤務時間","残業時間"]
+        cols = ["社員ID","氏名","日付","出勤時刻","退勤時刻","勤務時間","残業時間","承認残業時間"]
         export_df = export_df.reindex(columns=[c for c in cols if c in export_df.columns])
 
         ym_name = f"{end_date.year}-{end_date.month:02d}"
@@ -799,6 +873,137 @@ if is_admin:
                 file_name=f"全社員_出退勤履歴_{ym_name}.csv",
                 mime="text/csv",
             )
+
+    # ==============================
+    # 管理者：残業申請の承認／却下  ←★ ここを is_admin 内に配置
+    # ==============================
+    with st.expander("✅ 残業申請の承認／却下（管理者）", expanded=False):
+        ot = read_overtime_csv().merge(df_login[["社員ID","部署"]], on="社員ID", how="left")
+        start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
+        mask_period = (ot["対象日"]>=start_s) & (ot["対象日"]<=end_s)
+
+        col1, col2, col3 = st.columns([2,2,1.4])
+        with col1:
+            status_filter = st.multiselect("対象ステータス", ["申請済","承認","却下"], default=["申請済"])
+        with col2:
+            dept_options = sorted([d for d in ot["部署"].dropna().unique().tolist() if str(d).strip()])
+            dept_filter = st.multiselect("部署で絞り込み", dept_options, default=[])
+        with col3:
+            st.caption(f"期間: {start_s} ～ {end_s}")
+
+        m = mask_period
+        if status_filter: m &= ot["ステータス"].isin(status_filter)
+        if dept_filter:   m &= ot["部署"].isin(dept_filter)
+
+        view = ot.loc[m, ["社員ID","氏名","部署","対象日","申請日時","申請残業H","申請理由","ステータス","承認者","承認日時","却下理由"]].copy()
+        view = view.sort_values(["ステータス","対象日","社員ID"])
+
+        if view.empty:
+            st.caption("この条件に該当する申請はありません。")
+        else:
+            view["承認"] = False
+            view["却下"] = False
+            view["承認解除"] = False
+            view["削除"] = False
+            view["却下理由(入力)"] = ""
+
+            edited = st.data_editor(
+                view, hide_index=True, use_container_width=True,
+                column_config={
+                    "社員ID": st.column_config.TextColumn("社員ID", disabled=True),
+                    "氏名": st.column_config.TextColumn("氏名", disabled=True),
+                    "部署": st.column_config.TextColumn("部署", disabled=True),
+                    "対象日": st.column_config.TextColumn("対象日", disabled=True),
+                    "申請日時": st.column_config.TextColumn("申請日時", disabled=True),
+                    "申請残業H": st.column_config.TextColumn("申請残業H", disabled=True),
+                    "申請理由": st.column_config.TextColumn("申請理由", disabled=True),
+                    "ステータス": st.column_config.TextColumn("現ステータス", disabled=True),
+                    "承認者": st.column_config.TextColumn("承認者", disabled=True),
+                    "承認日時": st.column_config.TextColumn("承認日時", disabled=True),
+                    "却下理由": st.column_config.TextColumn("却下理由(既存)", disabled=True),
+                    "承認": st.column_config.CheckboxColumn("承認する"),
+                    "却下": st.column_config.CheckboxColumn("却下する"),
+                    "承認解除": st.column_config.CheckboxColumn("承認を取り消す"),
+                    "削除": st.column_config.CheckboxColumn("削除（申請済のみ）"),
+                    "却下理由(入力)": st.column_config.TextColumn("却下理由（入力）"),
+                },
+                key="overtime_approvals_editor"
+            )
+
+            colb1, colb2 = st.columns([1,3])
+            with colb1: apply_clicked = st.button("💾 選択を反映", type="primary", key="ot_apply")
+            with colb2: st.caption("※ 同じ行で複数操作は不可。却下時は理由を入力。")
+
+            if apply_clicked:
+                approver = st.session_state.user_name or "admin"
+                when_ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+                base = read_overtime_csv()
+                applied = 0; conflicts = []; logs = []
+
+                for _, r in edited.iterrows():
+                    approve = bool(r.get("承認", False))
+                    reject  = bool(r.get("却下", False))
+                    unapp   = bool(r.get("承認解除", False))
+                    delete  = bool(r.get("削除", False))
+                    if sum([approve,reject,unapp,delete]) == 0: continue
+                    if sum([approve,reject,unapp,delete]) > 1:
+                        conflicts.append(f'{r["氏名"]} {r["対象日"]}: 同時に複数操作はできません')
+                        continue
+
+                    km = (
+                        (base["社員ID"]==r["社員ID"]) &
+                        (base["対象日"]==r["対象日"]) &
+                        (base["申請日時"]==r["申請日時"])
+                    )
+                    if not km.any():
+                        conflicts.append(f'{r["氏名"]} {r["対象日"]}: 対象が見つかりません')
+                        continue
+
+                    cur = str(base.loc[km, "ステータス"].iloc[0])
+                    if approve:
+                        if cur != "申請済":
+                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で承認不可')
+                            continue
+                        base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["承認", approver, when_ts, ""]
+                        new_status = "承認"
+                    elif reject:
+                        if cur != "申請済":
+                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で却下不可')
+                            continue
+                        rsn = str(r.get("却下理由(入力)","")).strip()
+                        if not rsn:
+                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 却下理由が未入力')
+                            continue
+                        base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["却下", approver, when_ts, rsn]
+                        new_status = "却下"
+                    elif unapp:
+                        if cur != "承認":
+                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で承認解除不可')
+                            continue
+                        base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["申請済", "", "", ""]
+                        new_status = "申請済"
+                    else:  # delete
+                        if cur != "申請済":
+                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で削除不可（申請済のみ）')
+                            continue
+                        base = base.loc[~km].copy()
+                        new_status = "申請削除"
+
+                    applied += int(km.sum())
+                    logs.append({
+                        "timestamp": when_ts, "承認者": approver,
+                        "社員ID": r["社員ID"], "氏名": r["氏名"],
+                        "休暇日": r["対象日"], "申請日": r["申請日時"],   # 既存ログCSVの列を流用
+                        "旧ステータス": cur, "新ステータス": f"残業:{new_status}", "却下理由": r.get("却下理由(入力)","")
+                    })
+
+                if applied>0:
+                    write_overtime_csv(base)
+                    append_audit_log(logs)
+                    st.success(f"{applied} 件を更新しました。")
+                    time.sleep(1); st.rerun()
+                if conflicts:
+                    st.warning("一部適用できませんでした：\n- " + "\n- ".join(conflicts))
 
     # ==============================
     # 管理者：休日申請の承認／却下  ←★ ここを is_admin 内に配置
@@ -1521,14 +1726,22 @@ with st.container():
             df_view = df_view.rename(columns={"日付":"日付","出勤時刻":"出勤","退勤時刻":"退勤","残業時間":"残業H"})
             if "残業H" in df_view.columns:
                 df_view["残業H"] = df_view["残業H"].astype(float).apply(format_hours_minutes)
+            if "承認残業時間" in df_view.columns:
+                df_view["残業H(承認)"] = df_view["承認残業時間"].astype(float).apply(format_hours_minutes)
 
-            cols = ["日付", "出勤", "退勤"] + (["残業H"] if "残業H" in df_view.columns else [])
+            cols = ["日付", "出勤", "退勤"]
+            if "残業H" in df_view.columns:
+                cols.append("残業H")
+            if "承認残業時間" in df_view.columns:
+                cols.append("残業H(承認)")
+
             st.dataframe(
                 df_view[cols],
                 hide_index=True,
                 use_container_width=True
             )
-            st.subheader(f"⏱️ 合計残業時間：{format_hours_minutes(df_self['残業時間'].sum())}")
+            st.markdown(f"**🕒 合計残業時間（総計）：{format_hours_minutes(df_self['残業時間'].sum())}**")
+            st.markdown(f"**✅ 合計残業時間（承認済み）：{format_hours_minutes(df_self['承認残業時間'].sum())}**")
 
 # ==============================
 # 修正 / 削除（社員本人のみ）
@@ -1628,6 +1841,111 @@ with st.expander("出退勤の ✏️ 修正 / 🗑️ 削除", expanded=False):
                     st.success(f"{len(to_delete)} 件削除しました。")
                     time.sleep(1)
                     st.rerun()
+
+# ==============================
+# 残業申請
+# ==============================
+with st.expander("⏱️ 残業申請", expanded=False):
+    with st.form("overtime_form"):
+        target_date = st.date_input("対象日", value=today, min_value=OPEN_START.date(), max_value=OPEN_END.date())
+        # その日の現時点の自動計算残業Hを初期値に
+        _dstr = target_date.strftime("%Y-%m-%d")
+        today_row = df[(df["社員ID"]==st.session_state.user_id) & (df["日付"].dt.strftime("%Y-%m-%d")==_dstr)]
+        default_ot = float(today_row["残業時間"].iloc[0]) if not today_row.empty else 0.0
+        req_hours = st.number_input("申請残業H（時間・0.25刻み推奨）", min_value=0.0, max_value=24.0, step=0.25, value=float(default_ot))
+        reason = st.text_input("申請理由（任意だが推奨）", value="")
+        submitted = st.form_submit_button("申請する", type="primary")
+
+        if submitted:
+            ot = read_overtime_csv()
+            key_mask = (
+                (ot["社員ID"] == st.session_state.user_id) &
+                (ot["対象日"] == _dstr) &
+                (ot["ステータス"].isin(["申請済","承認"]))   # 申請中/承認済が既にあるなら二重申請を止める
+            )
+            if key_mask.any():
+                st.warning("この日付は、すでに『申請中』または『承認済』の残業申請があります。")
+            else:
+                new_row = {
+                    "社員ID": st.session_state.user_id,
+                    "氏名": st.session_state.user_name,
+                    "対象日": _dstr,
+                    "申請日時": datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
+                    "申請残業H": f"{float(req_hours):.2f}",
+                    "申請理由": reason,
+                    "ステータス": "申請済",
+                    "承認者": "",
+                    "承認日時": "",
+                    "却下理由": ""
+                }
+                ot = pd.concat([ot, pd.DataFrame([new_row])], ignore_index=True)
+                write_overtime_csv(ot)
+                st.success("✅ 残業申請を受け付けました。")
+                time.sleep(1)
+                st.rerun()
+
+    # 自分の申請一覧（当月）
+    ot_all = read_overtime_csv()
+    mask = (
+        (ot_all["社員ID"]==st.session_state.user_id) &
+        (ot_all["対象日"]>= start_date.strftime("%Y-%m-%d")) &
+        (ot_all["対象日"]<= end_date.strftime("%Y-%m-%d"))
+    )
+    mine = ot_all.loc[mask].sort_values(["対象日","申請日時"])
+    st.markdown("#### 当月の残業申請一覧")
+    if mine.empty:
+        st.caption("この期間の残業申請はありません。")
+    else:
+        show = mine[["対象日","申請残業H","ステータス","承認者","承認日時","却下理由","申請理由"]].rename(
+            columns={"対象日":"日付","申請残業H":"申請H"}
+        )
+        st.dataframe(show, hide_index=True, use_container_width=True)
+
+    # 本人取消（申請済のみ）
+    st.markdown("#### 申請済の取消（本人）")
+    cand = mine[mine["ステータス"]=="申請済"].copy()
+    if cand.empty:
+        st.caption("取消できる『申請済』はありません。")
+    else:
+        view = cand[["対象日","申請残業H","申請日時","申請理由"]].copy()
+        view["取消"] = False
+        edited = st.data_editor(view, hide_index=True, use_container_width=True,
+                                column_config={
+                                    "対象日": st.column_config.TextColumn("対象日", disabled=True),
+                                    "申請残業H": st.column_config.TextColumn("申請残業H", disabled=True),
+                                    "申請日時": st.column_config.TextColumn("申請日時", disabled=True),
+                                    "申請理由": st.column_config.TextColumn("申請理由", disabled=True),
+                                    "取消": st.column_config.CheckboxColumn("取消する")
+                                })
+        to_cancel = edited[edited["取消"]==True][["対象日","申請日時"]].values.tolist()
+        if st.button("選択した『申請済』を取消"):
+            if not to_cancel:
+                st.info("取り消す行が選択されていません。")
+            else:
+                base = read_overtime_csv()
+                before = len(base)
+                ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+                logs = []
+                for d, ts_applied in to_cancel:
+                    km = (
+                        (base["社員ID"]==st.session_state.user_id) &
+                        (base["対象日"]==d) &
+                        (base["申請日時"]==ts_applied) &
+                        (base["ステータス"]=="申請済")
+                    )
+                    if km.any():
+                        # 監査ログ（残業も holiday_audit_log.csv に積むなら以下で種別付けしてもOK）
+                        logs.append({
+                            "timestamp": ts, "承認者": st.session_state.user_name,
+                            "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                            "休暇日": d, "申請日": ts_applied,  # 流用カラム
+                            "旧ステータス": "申請済", "新ステータス": "本人取消(残業)", "却下理由": ""
+                        })
+                        base = base[~km]
+                write_overtime_csv(base)
+                if logs: append_audit_log(logs)
+                st.success(f"{before-len(base)} 件の『申請済』を取り消しました。")
+                time.sleep(1); st.rerun()
 
 # ==============================
 # 休日・休暇申請
