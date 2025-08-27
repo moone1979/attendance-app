@@ -1317,16 +1317,6 @@ with col_g2:
     else:
         st.caption("未取得です（必要なら上のボタンを押してください）")
 
-# ここで余白を詰めるCSSを注入
-st.markdown("""
-<style>
-/* 保存ボタン直後のデフォルト余白を削減 */
-div.stButton + div {
-    margin-top: -15px !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
 # ---- geolocation 実行用（keyは渡さない）----
 TOKEN_VAL = str(st.session_state.get("gps_click_token", 0))
 gps_val = components.html(
@@ -1428,8 +1418,6 @@ if save_clicked:
         "date": selected_date.strftime("%Y-%m-%d"),
     }
     st.rerun()
-
-st.markdown('</div>', unsafe_allow_html=True)  # ← ラッパー終わり
 
 # ---- 前月ロック判定 ----
 if selected_date < past_limit_date or selected_date > today:
@@ -1760,3 +1748,6 @@ df_self_month = df[
 
 total_ot_hours = float(df_self_month["残業時間"].fillna(0).astype(float).sum())
 st.markdown(f"**⏱️ 当月の合計残業時間：{format_hours_minutes(total_ot_hours)}**")
+
+# —— ラッパー終わり（ここで閉じる）——
+st.markdown('</div>', unsafe_allow_html=True)
