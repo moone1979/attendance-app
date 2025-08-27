@@ -1237,22 +1237,23 @@ if is_admin:
 
 st.markdown("""
 <style>
-/* g-tight アンカーを含むコンテナの子同士の縦ギャップを詰める */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) {
-  row-gap: .25rem !important;   /* 好みで 0 ～ .5rem に */
+/* 親コンテナ（アンカー直下）の縦ギャップを詰める */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
+div.block-container:has(> div[data-testid="stVerticalBlock"] > .g-tight-anchor) {
+  row-gap: .25rem !important;
 }
 
-/* そのコンテナ内のボタン上余白もゼロに */
+/* ボタン上の余白ゼロ */
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) .stButton > button {
   margin-top: 0 !important;
 }
 
-/* そのコンテナ直下の expander の頭も少しだけ詰める */
+/* expander の頭を少し詰める */
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander {
-  margin-top: 2px !important;   /* 好みで調整 */
+  margin-top: 2px !important;
 }
 
-/* コンポーネント iframe を完全に消すと実行されない場合があるのでサイズだけ潰す */
+/* components.html の iframe を極小化 */
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) iframe {
   width: 0 !important;
   height: 0 !important;
