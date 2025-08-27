@@ -14,46 +14,51 @@ JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 def today_jst():
     return datetime.now(JST).date()
 
+st.set_page_config(page_title="出退勤アプリ（ログイン式）", layout="wide")
+
 st.markdown("""
 <style>
-/* ---- 本番用：デバッグ線は消す ---- */
-.g-cmark{
-  display:block !important;
-  height:0 !important;
-  margin:0 !important;
-  padding:0 !important;
-  border:0 !important;
-  outline: none !important;  /* ← これで水色の線が消えます */
-}
+/* ===== 可視化（デバッグ用） ===== */
+.g-cmark{ outline:2px dashed #00d5ff !important; }
 
-/* ---- ここが本命（余白を潰す） ---- */
+/* ===== 1) マーカー直後の components 親（element-container）をゼロ化 ===== */
 .g-cmark + div[data-testid="element-container"]{
-  margin: 0 !important;
-  padding: 0 !important;
-  height: 0 !important;
-  min-height: 0 !important;
-  overflow: hidden !important;
-  border: 0 !important;
-  box-shadow: none !important;
+  margin:0 !important; padding:0 !important;
+  height:0 !important; min-height:0 !important; overflow:hidden !important;
 }
 .g-cmark + div[data-testid="element-container"] iframe{
-  width: 0 !important;
-  height: 0 !important;
-  display: block !important;
-  visibility: hidden !important;
-  pointer-events: none !important;
+  width:0 !important; height:0 !important; display:block !important; visibility:hidden !important;
 }
-.g-cmark + div[data-testid="element-container"] > div{
-  margin: 0 !important;
-  padding: 0 !important;
-  height: 0 !important;
-  min-height: 0 !important;
-  border: 0 !important;
+
+/* ===== 2) 「マーカーを含む縦ブロック」自体の下余白を詰める ===== */
+div[data-testid="stVerticalBlock"]:has(.g-cmark){
+  row-gap:.25rem !important;    /* 子のギャップを詰める */
+  margin-bottom:0 !important;   /* 自身の下マージンを詰める */
+  padding-bottom:0 !important;
+}
+
+/* ===== 3) その“直後の縦ブロック”に自動で入る spacer を潰す（←今回の残りの原因） ===== */
+div[data-testid="stVerticalBlock"]:has(.g-cmark)
+  + div[data-testid="stVerticalBlock"] > div[data-testid="stSpacer"]{
+  height:0 !important; margin:0 !important; padding:0 !important;
+}
+
+/* ===== 4) 横並び(colums)や見出しの末尾マージンも詰める（保険） ===== */
+div[data-testid="stVerticalBlock"]:has(.g-cmark) div[data-testid="stHorizontalBlock"]{
+  margin-bottom:0 !important;
+}
+div[data-testid="stVerticalBlock"]:has(.g-cmark) h3, 
+div[data-testid="stVerticalBlock"]:has(.g-cmark) h4{
+  margin-bottom:.25rem !important;
+}
+
+/* ===== 5) 直後の expander の頭の余白も詰める（保険） ===== */
+div[data-testid="stVerticalBlock"]:has(.g-cmark) 
+  + div[data-testid="stVerticalBlock"] details.st-expander{
+  margin-top:0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
-
-st.set_page_config(page_title="出退勤アプリ（ログイン式）", layout="wide")
 
 # ==============================
 # パス & 列定義
