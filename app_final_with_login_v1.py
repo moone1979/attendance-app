@@ -1235,6 +1235,32 @@ if is_admin:
     # 管理者分岐の最後に stop（社員UIに進ませない）
     st.stop()
 
+st.markdown("""
+<style>
+/* g-tight アンカーを含むコンテナの子同士の縦ギャップを詰める */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) {
+  row-gap: .25rem !important;   /* 好みで 0 ～ .5rem に */
+}
+
+/* そのコンテナ内のボタン上余白もゼロに */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) .stButton > button {
+  margin-top: 0 !important;
+}
+
+/* そのコンテナ直下の expander の頭も少しだけ詰める */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander {
+  margin-top: 2px !important;   /* 好みで調整 */
+}
+
+/* コンポーネント iframe を完全に消すと実行されない場合があるのでサイズだけ潰す */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) iframe {
+  width: 0 !important;
+  height: 0 !important;
+  display: block !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ==============================
 # 社員UI
 # ==============================
@@ -1280,253 +1306,240 @@ if "gps_error" not in st.session_state:
 if "gps_click_token" not in st.session_state:
     st.session_state.gps_click_token = 0.0  # ボタン押下トリガ
 
-st.markdown("""
-<style>
-/* ラッパー内のブロック間ギャップを縮める */
-.g-tight [data-testid="stVerticalBlock"] { row-gap: .25rem !important; }
+# ===== ここから “ギャップを詰めたい範囲” を本物の親で囲む =====
+with st.container():
+    # 親を特定するためのアンカー（1行目に置く）
+    st.markdown('<span class="g-tight-anchor"></span>', unsafe_allow_html=True)
 
-/* 念のため、ボタン上の余白もゼロ */
-.g-tight .stButton > button { margin-top: 0 !important; }
+    st.markdown("### 📍 位置情報")
+    col_g1, col_g2 = st.columns([1, 3])
+    with col_g1:
+        # 押下でトークン更新→即 rerun（JS が新トークンを拾ってポップアップ起動）
+        if st.button("位置情報を取得する"):
+            st.session_state.gps_error = ""
+            st.session_state.manual_gps = ""
+            st.session_state.gps_click_token = time.time()
+            st.rerun()
 
-/* expanderの頭を少しだけ上げる（好みで調整） */
-.g-tight details.st-expander { margin-top: 2px !important; }
-</style>
-""", unsafe_allow_html=True)
+        # ← ここに保存ボタンを移動
+        save_clicked = st.button("保存", key="save_btn_top", disabled=is_approved_holiday)
 
-st.markdown('<div class="g-tight">', unsafe_allow_html=True)
+    with col_g2:
+        # 現状表示
+        if st.session_state.manual_gps:
+            st.success(f"取得済み: {st.session_state.manual_gps}")
+        elif st.session_state.gps_error:
+            st.warning("取得失敗: " + st.session_state.gps_error)
+        else:
+            st.caption("未取得です（必要なら上のボタンを押してください）")
 
-st.markdown("### 📍 位置情報")
-col_g1, col_g2 = st.columns([1, 3])
-with col_g1:
-    # 押下でトークン更新→即 rerun（JS が新トークンを拾ってポップアップ起動）
-    if st.button("位置情報を取得する"):
-        st.session_state.gps_error = ""
-        st.session_state.manual_gps = ""
-        st.session_state.gps_click_token = time.time()
+    # ---- geolocation 実行用（keyは渡さない）----
+    TOKEN_VAL = str(st.session_state.get("gps_click_token", 0))
+    gps_val = components.html(
+    """
+    <div id="gps-hook" style="display:none"></div>
+    <script>
+    (function(){
+      const TOKEN = "__TOKEN__";
+      if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
+
+      // 親URLのクエリを書き換えるヘルパー
+      function redirectWith(param, value){
+        try {
+          const topWin = window.top;
+          const url = new URL(topWin.location.href);
+          url.searchParams.set(param, value); // uid 等は既存のまま温存
+          topWin.location.href = url.toString();  // ← 親をリロード（uid保持）
+        } catch (e) {}
+      }
+
+      let w = window.open("", "_blank", "width=360,height=280");
+      if (!w) { redirectWith("gps_error","POPUP_BLOCKED"); return; }
+
+      w.document.write(`<!doctype html><html><head>
+        <meta name="viewport" content="width=device-width,initial-scale=1"/>
+        <title>位置情報の取得</title>
+      </head>
+      <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
+        <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
+        <div id="s" style="white-space:pre-wrap"></div>
+        <script>
+          (function(){
+            const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
+            function back(param, value){
+              try{
+                const topWin = window.opener ? window.opener.top : null;
+                if (topWin){
+                  const url = new URL(topWin.location.href);
+                  url.searchParams.set(param, value);  // uidなど既存のクエリは温存
+                  topWin.location.href = url.toString();
+                }
+              }catch(e){}
+              setTimeout(()=>window.close(), 300);
+            }
+
+            if (!('geolocation' in navigator)) { say("この端末/ブラウザでは位置情報が使えません。"); back("gps_error","GEO_UNSUPPORTED"); return; }
+
+            navigator.geolocation.getCurrentPosition(function(pos){
+              const v = pos.coords.latitude + "," + pos.coords.longitude;
+              say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
+              back("gps", v);
+            }, function(err){
+              const msg = (err && err.message) ? err.message : "GEO_ERROR";
+              say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
+              back("gps_error", msg);
+            }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
+          })();
+        <\/script>
+      </body></html>`);
+    })();
+    </script>
+    """.replace("__TOKEN__", TOKEN_VAL),
+        height=0
+    )
+
+    # ★ デバッグログ（必要なら）
+    # st.write({"gps_val": gps_val, "state": dict(st.session_state)})
+
+    # JSからの結果をセッションへ反映（components.html の setComponentValue ハックで値が返る）
+    if isinstance(gps_val, str) and gps_val:
+        if gps_val.startswith("ERROR:"):
+            st.session_state.gps_error = gps_val.replace("ERROR:", "")
+            st.session_state.manual_gps = ""
+        else:
+            st.session_state.manual_gps = gps_val
+            st.session_state.gps_error = ""
+        # 次ランでポップアップが再起動しないようにリセット
+        st.session_state.gps_click_token = 0
         st.rerun()
 
-    # ← ここに保存ボタンを移動
-    save_clicked = st.button("保存", key="save_btn_top", disabled=is_approved_holiday)
+    # Python側で使う値（保存処理で使用）
+    effective_gps = st.session_state.get("manual_gps", "")
+    lat, lng = "", ""
+    if isinstance(effective_gps, str) and "," in effective_gps:
+        lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
 
-with col_g2:
-    # 現状表示
-    if st.session_state.manual_gps:
-        st.success(f"取得済み: {st.session_state.manual_gps}")
-    elif st.session_state.gps_error:
-        st.warning("取得失敗: " + st.session_state.gps_error)
-    else:
-        st.caption("未取得です（必要なら上のボタンを押してください）")
+    # ========= 背景GPS取得ここまで =========
 
-# ---- geolocation 実行用（keyは渡さない）----
-TOKEN_VAL = str(st.session_state.get("gps_click_token", 0))
-gps_val = components.html(
-    """
-<div id="gps-hook" style="display:none"></div>
-<script>
-(function(){
-  const TOKEN = "__TOKEN__";
-  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
+    # …（gps_val の処理、lat/lng の算出の直後あたりに）
+    if save_clicked:
+        if punch_type == "出勤" and not (lat and lng):
+            err = st.session_state.get("gps_error", "")
+            st.warning("位置情報が未取得のため、位置情報なしで保存します。"
+                       + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
 
-  // 親URLのクエリを書き換えるヘルパー
-  function redirectWith(param, value){
-    try {
-      const topWin = window.top;
-      const url = new URL(topWin.location.href);
-      url.searchParams.set(param, value); // uid 等は既存のまま温存
-      topWin.location.href = url.toString();  // ← 親をリロード（uid保持）
-    } catch (e) {}
-  }
-
-  let w = window.open("", "_blank", "width=360,height=280");
-  if (!w) { redirectWith("gps_error","POPUP_BLOCKED"); return; }
-
-  w.document.write(`<!doctype html><html><head>
-    <meta name="viewport" content="width=device-width,initial-scale=1"/>
-    <title>位置情報の取得</title>
-  </head>
-  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
-    <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
-    <div id="s" style="white-space:pre-wrap"></div>
-    <script>
-      (function(){
-        const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
-        function back(param, value){
-          try{
-            const topWin = window.opener ? window.opener.top : null;
-            if (topWin){
-              const url = new URL(topWin.location.href);
-              url.searchParams.set(param, value);  // uidなど既存のクエリは温存
-              topWin.location.href = url.toString();
-            }
-          }catch(e){}
-          setTimeout(()=>window.close(), 300);
+        st.session_state.pending_save = True
+        st.session_state.punch_action = {
+            "type": punch_type,
+            "date": selected_date.strftime("%Y-%m-%d"),
         }
+        st.rerun()
 
-        if (!('geolocation' in navigator)) { say("この端末/ブラウザでは位置情報が使えません。"); back("gps_error","GEO_UNSUPPORTED"); return; }
-
-        navigator.geolocation.getCurrentPosition(function(pos){
-          const v = pos.coords.latitude + "," + pos.coords.longitude;
-          say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-          back("gps", v);
-        }, function(err){
-          const msg = (err && err.message) ? err.message : "GEO_ERROR";
-          say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
-          back("gps_error", msg);
-        }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
-      })();
-    <\/script>
-  </body></html>`);
-})();
-</script>
-""".replace("__TOKEN__", TOKEN_VAL),
-    height=0
-)
-
-# ★ デバッグログ（必要なら）
-# st.write({"gps_val": gps_val, "state": dict(st.session_state)})
-
-# JSからの結果をセッションへ反映（components.html の setComponentValue ハックで値が返る）
-if isinstance(gps_val, str) and gps_val:
-    if gps_val.startswith("ERROR:"):
-        st.session_state.gps_error = gps_val.replace("ERROR:", "")
-        st.session_state.manual_gps = ""
+    # ---- 前月ロック判定 ----
+    if selected_date < past_limit_date or selected_date > today:
+        st.error(f"この日は入力範囲外です。{past_limit_date:%Y-%m-%d} 〜 {today:%Y-%m-%d} の間で選択してください。")
     else:
-        st.session_state.manual_gps = gps_val
-        st.session_state.gps_error = ""
-    # 次ランでポップアップが再起動しないようにリセット
-    st.session_state.gps_click_token = 0
-    st.rerun()
+        # （任意）承認済み休日なら事前に注意を表示
+        if is_approved_holiday:
+            st.warning("この日は承認済みです。打刻する場合は、管理者にご相談ください。")
 
-# Python側で使う値（保存処理で使用）
-effective_gps = st.session_state.get("manual_gps", "")
-lat, lng = "", ""
-if isinstance(effective_gps, str) and "," in effective_gps:
-    lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
+        # ===== 保存フェーズ（pending_save が True のときに実行） =====
+        if st.session_state.get("pending_save"):
+            # 今ランでは位置情報取得は起動しない（任意のため）
+            action = st.session_state.get("punch_action", {})
+            action_type = action.get("type", punch_type)  # 念のためフォールバック
+            action_date = action.get("date", selected_date.strftime("%Y-%m-%d"))
+            now_hm = datetime.now(JST).strftime("%H:%M")
 
-# ========= 背景GPS取得ここまで =========
-
-# …（gps_val の処理、lat/lng の算出の直後あたりに）
-if save_clicked:
-    if punch_type == "出勤" and not (lat and lng):
-        err = st.session_state.get("gps_error", "")
-        st.warning("位置情報が未取得のため、位置情報なしで保存します。"
-                   + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
-
-    st.session_state.pending_save = True
-    st.session_state.punch_action = {
-        "type": punch_type,
-        "date": selected_date.strftime("%Y-%m-%d"),
-    }
-    st.rerun()
-
-# ---- 前月ロック判定 ----
-if selected_date < past_limit_date or selected_date > today:
-    st.error(f"この日は入力範囲外です。{past_limit_date:%Y-%m-%d} 〜 {today:%Y-%m-%d} の間で選択してください。")
-else:
-    # （任意）承認済み休日なら事前に注意を表示
-    if is_approved_holiday:
-        st.warning("この日は承認済みです。打刻する場合は、管理者にご相談ください。")
-
-    # ===== 保存フェーズ（pending_save が True のときに実行） =====
-    if st.session_state.get("pending_save"):
-        # 今ランでは位置情報取得は起動しない（任意のため）
-        action = st.session_state.get("punch_action", {})
-        action_type = action.get("type", punch_type)  # 念のためフォールバック
-        action_date = action.get("date", selected_date.strftime("%Y-%m-%d"))
-        now_hm = datetime.now(JST).strftime("%H:%M")
-
-        # 承認済み休日は保存禁止（仕様）
-        _hd = read_holiday_csv()
-        if ((_hd["社員ID"] == st.session_state.user_id) &
-            (_hd["休暇日"] == action_date) &
-            (_hd["ステータス"] == "承認")).any():
-            st.session_state.pending_save = False
-            st.error("この日は承認済みの休日です。打刻はできません。")
-            st.stop()
-
-        # 保存本体（出勤/退勤 共通）
-        df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) else pd.DataFrame(columns=ATT_COLUMNS)
-        for col in ATT_COLUMNS:
-            if col not in df_att.columns:
-                df_att[col] = ""
-
-        m = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == action_date)
-
-        if action_type == "出勤":
-            # 位置情報が無い場合は警告だけ出して保存続行
-            if not (lat and lng):
-                err = st.session_state.get("gps_error", "")
-                st.warning("位置情報が未取得のため、位置情報なしで保存します。"
-                           + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
-            if m.any():
-                df_att.loc[m, ["出勤時刻", "緯度", "経度"]] = [now_hm, (lat or ""), (lng or "")]
-            else:
-                df_att = pd.concat([df_att, pd.DataFrame([{
-                    "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
-                    "日付": action_date, "出勤時刻": now_hm, "退勤時刻": "",
-                    "緯度": (lat or ""), "経度": (lng or "")
-                }])], ignore_index=True)
-
-            if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
-                removed = auto_cancel_holiday_by_attendance(st.session_state.user_id, st.session_state.user_name, action_date)
-                if removed > 0:
-                    st.info(f"この日の休暇申請（{removed}件）を自動取消しました。")
+            # 承認済み休日は保存禁止（仕様）
+            _hd = read_holiday_csv()
+            if ((_hd["社員ID"] == st.session_state.user_id) &
+                (_hd["休暇日"] == action_date) &
+                (_hd["ステータス"] == "承認")).any():
                 st.session_state.pending_save = False
-                st.success(f"✅ 出勤 を {now_hm} で保存しました。")
-                time.sleep(1.2)
-                st.rerun()
+                st.error("この日は承認済みの休日です。打刻はできません。")
+                st.stop()
 
-        else:  # 退勤
-            if m.any():
-                # 座標があれば一緒に更新、無ければ退勤時刻のみ
-                if lat and lng:
-                    df_att.loc[m, ["退勤時刻", "緯度", "経度"]] = [now_hm, lat, lng]
+            # 保存本体（出勤/退勤 共通）
+            df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) else pd.DataFrame(columns=ATT_COLUMNS)
+            for col in ATT_COLUMNS:
+                if col not in df_att.columns:
+                    df_att[col] = ""
+
+            m = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == action_date)
+
+            if action_type == "出勤":
+                # 位置情報が無い場合は警告だけ出して保存続行
+                if not (lat and lng):
+                    err = st.session_state.get("gps_error", "")
+                    st.warning("位置情報が未取得のため、位置情報なしで保存します。"
+                               + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
+                if m.any():
+                    df_att.loc[m, ["出勤時刻", "緯度", "経度"]] = [now_hm, (lat or ""), (lng or "")]
                 else:
-                    df_att.loc[m, "退勤時刻"] = now_hm
-            else:
-                # 新規行（退勤先行）。座標があれば入れる
-                df_att = pd.concat([df_att, pd.DataFrame([{
-                    "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
-                    "日付": action_date, "出勤時刻": "", "退勤時刻": now_hm,
-                    "緯度": (lat if (lat and lng) else ""), "経度": (lng if (lat and lng) else "")
-                }])], ignore_index=True)
+                    df_att = pd.concat([df_att, pd.DataFrame([{
+                        "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                        "日付": action_date, "出勤時刻": now_hm, "退勤時刻": "",
+                        "緯度": (lat or ""), "経度": (lng or "")
+                    }])], ignore_index=True)
 
-            if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
-                st.session_state.pending_save = False
-                st.success(f"✅ 退勤 を {now_hm} で保存しました。")
-                time.sleep(1.2)
-                st.rerun()
+                if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
+                    removed = auto_cancel_holiday_by_attendance(st.session_state.user_id, st.session_state.user_name, action_date)
+                    if removed > 0:
+                        st.info(f"この日の休暇申請（{removed}件）を自動取消しました。")
+                    st.session_state.pending_save = False
+                    st.success(f"✅ 出勤 を {now_hm} で保存しました。")
+                    time.sleep(1.2)
+                    st.rerun()
+
+            else:  # 退勤
+                if m.any():
+                    # 座標があれば一緒に更新、無ければ退勤時刻のみ
+                    if lat and lng:
+                        df_att.loc[m, ["退勤時刻", "緯度", "経度"]] = [now_hm, lat, lng]
+                    else:
+                        df_att.loc[m, "退勤時刻"] = now_hm
+                else:
+                    # 新規行（退勤先行）。座標があれば入れる
+                    df_att = pd.concat([df_att, pd.DataFrame([{
+                        "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                        "日付": action_date, "出勤時刻": "", "退勤時刻": now_hm,
+                        "緯度": (lat if (lat and lng) else ""), "経度": (lng if (lat and lng) else "")
+                    }])], ignore_index=True)
+
+                if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
+                    st.session_state.pending_save = False
+                    st.success(f"✅ 退勤 を {now_hm} で保存しました。")
+                    time.sleep(1.2)
+                    st.rerun()
 
 # ==============================
 # 月別履歴（社員）
 # ==============================
-with st.expander(f"📋 月別履歴（{start_date:%Y/%m/%d}～{end_date:%Y/%m/%d}）", expanded=False):
-    df_self = df[
-        (df["社員ID"] == st.session_state.user_id) &
-        (df["日付"] >= pd.Timestamp(past_limit_date)) &
-        (df["日付"] <= pd.Timestamp(today))
-    ].sort_values("日付")
+    with st.expander(f"📋 月別履歴（{start_date:%Y/%m/%d}～{end_date:%Y/%m/%d}）", expanded=False):
+        df_self = df[
+            (df["社員ID"] == st.session_state.user_id) &
+            (df["日付"] >= pd.Timestamp(past_limit_date)) &
+            (df["日付"] <= pd.Timestamp(today))
+        ].sort_values("日付")
 
-    if df_self.empty:
-        st.info("この月の出退勤記録はありません。")
-    else:
-        # 表示用（休日の列は付けない）
-        df_view = df_self.copy()
-        df_view["日付"] = df_view["日付"].dt.strftime("%Y-%m-%d")
-        df_view = df_view.rename(columns={"日付":"日付","出勤時刻":"出勤","退勤時刻":"退勤","残業時間":"残業H"})
-        if "残業H" in df_view.columns:
-            df_view["残業H"] = df_view["残業H"].astype(float).apply(format_hours_minutes)
+        if df_self.empty:
+            st.info("この月の出退勤記録はありません。")
+        else:
+            # 表示用（休日の列は付けない）
+            df_view = df_self.copy()
+            df_view["日付"] = df_view["日付"].dt.strftime("%Y-%m-%d")
+            df_view = df_view.rename(columns={"日付":"日付","出勤時刻":"出勤","退勤時刻":"退勤","残業時間":"残業H"})
+            if "残業H" in df_view.columns:
+                df_view["残業H"] = df_view["残業H"].astype(float).apply(format_hours_minutes)
 
-        cols = ["日付", "出勤", "退勤"] + (["残業H"] if "残業H" in df_view.columns else [])
-        st.dataframe(
-            df_view[cols],
-            hide_index=True,
-            use_container_width=True
-        )
-        st.subheader(f"⏱️ 合計残業時間：{format_hours_minutes(df_self['残業時間'].sum())}")
-
-# —— ラッパー終わり（ここで閉じる）——
-st.markdown('</div>', unsafe_allow_html=True)
+            cols = ["日付", "出勤", "退勤"] + (["残業H"] if "残業H" in df_view.columns else [])
+            st.dataframe(
+                df_view[cols],
+                hide_index=True,
+                use_container_width=True
+            )
+            st.subheader(f"⏱️ 合計残業時間：{format_hours_minutes(df_self['残業時間'].sum())}")
 
 # ==============================
 # 修正 / 削除（社員本人のみ）
