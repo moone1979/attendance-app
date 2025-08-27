@@ -1283,17 +1283,14 @@ if "gps_click_token" not in st.session_state:
 # 位置情報UIの直前に一度だけCSSを注入
 st.markdown("""
 <style>
-/* 位置情報セクションの“下”のデフォ余白を詰める */
-.gps-block { margin-bottom: -20px !important; }
-
-/* 念のため：このセクション内のボタンの上余白もゼロに */
-.gps-block .stButton>button { margin-top: 0 !important; }
+  /* ラッパーの下余白を消す（親gapの影響を最小化）*/
+  .gps-block { margin-bottom: 0 !important; }
+  /* ラッパー内ボタンの上余白もゼロでキュッと */
+  .gps-block .stButton > button { margin-top: 0 !important; }
+  /* ラッパー直下に来る expander の余白も詰める */
+  .gps-block details.st-expander { margin-top: 4px !important; }
 </style>
 """, unsafe_allow_html=True)
-
-# —— ここから位置情報セクションを丸ごとラップ ——
-st.markdown('<div class="gps-block">', unsafe_allow_html=True)
-
 
 st.markdown("### 📍 位置情報")
 col_g1, col_g2 = st.columns([1, 3])
