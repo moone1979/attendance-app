@@ -1237,42 +1237,54 @@ if is_admin:
 
 st.markdown("""
 <style>
-/* 1) アンカーを含む親コンテナの row-gap を縮める（あなたの既存ルールはそのままでOK） */
+/* --- アンカーが markdown ラッパに入っても拾えるように網を広げる --- */
+.g-tight-anchor{display:block;height:0;margin:0;padding:0}
+
+/* 親の縦ギャップ：row-gap ではなく gap ごと潰す（横並びにも効く）*/
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
-div.block-container:has(> div[data-testid="stVerticalBlock"] > .g-tight-anchor) {
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor),
+div.block-container:has(> div[data-testid="stVerticalBlock"] > .g-tight-anchor),
+div.block-container:has(> div[data-testid="stVerticalBlock"] > div[data-testid="stMarkdown"] .g-tight-anchor){
+  gap: .25rem !important;      /* ← row-gap より確実 */
   row-gap: .25rem !important;
 }
 
-/* 2) その“親の直下”に置かれる Streamlit の spacer を潰す（←これが強敵） */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) > div[data-testid="stSpacer"]{
-  height: 0 !important;
+/* アンカー直下に自動で入る spacer を潰す（直下子と markdown 経由の両方）*/
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) > div[data-testid="stSpacer"],
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) > div[data-testid="stSpacer"]{
+  height:0 !important;
 }
 
-/* 3) components.html(iframe) の element-container ごと余白をゼロにする */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) div[data-testid="element-container"]:has(> iframe){
-  margin: 0 !important;
-  padding: 0 !important;
+/* components.html の element-container のマージン/パディングを詰める */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) div[data-testid="element-container"]:has(> iframe),
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) div[data-testid="element-container"]:has(> iframe){
+  margin:0 !important;
+  padding:0 !important;
 }
 
-/* 4) 念のため iframe 自体も極小化（既存と被ってもOK） */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) iframe{
-  width: 0 !important;
-  height: 0 !important;
-  display: block !important;
+/* iframe 自体も極小化（安全側）*/
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) iframe,
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) iframe{
+  width:0 !important; height:0 !important; display:block !important;
 }
 
-/* 5) セクション見出しの下マージンも少し詰める */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) h3{
-  margin-bottom: .25rem !important;
+/* 見出し・エキスパンダの頭の余白をさらに詰める */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) h3,
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) h3{
+  margin-bottom:.25rem !important;
+}
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander,
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) details.st-expander{
+  margin-top:0 !important;
 }
 
-/* 6) expander の頭（トップマージン）をさらに詰める */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander{
-  margin-top: 0 !important;
+/* アンカー直下の element-container 自体の下マージンも削る（全要素に効かせる）*/
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) > div[data-testid="element-container"],
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) > div[data-testid="element-container"]{
+  margin-bottom:.25rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
-
 # ==============================
 # 社員UI
 # ==============================
@@ -1321,7 +1333,7 @@ if "gps_click_token" not in st.session_state:
 # ===== ここから “ギャップを詰めたい範囲” を本物の親で囲む =====
 with st.container():
     # 親を特定するためのアンカー（1行目に置く）
-    st.markdown('<span class="g-tight-anchor"></span>', unsafe_allow_html=True)
+    st.markdown('<div class="g-tight-anchor"></div>', unsafe_allow_html=True)
 
     st.markdown("### 📍 位置情報")
     col_g1, col_g2 = st.columns([1, 3])
