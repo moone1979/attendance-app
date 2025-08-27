@@ -1237,54 +1237,93 @@ if is_admin:
 
 st.markdown("""
 <style>
-/* --- アンカーが markdown ラッパに入っても拾えるように網を広げる --- */
-.g-tight-anchor{display:block;height:0;margin:0;padding:0}
+/* === デバッグ可視化 === */
 
-/* 親の縦ギャップ：row-gap ではなく gap ごと潰す（横並びにも効く）*/
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor),
-div.block-container:has(> div[data-testid="stVerticalBlock"] > .g-tight-anchor),
-div.block-container:has(> div[data-testid="stVerticalBlock"] > div[data-testid="stMarkdown"] .g-tight-anchor){
-  gap: .25rem !important;      /* ← row-gap より確実 */
-  row-gap: .25rem !important;
+/* アンカーを“見える化” */
+.g-tight-anchor{
+  display:block !important;
+  height:4px !important;
+  background:rebeccapurple !important;
+  margin:2px 0 !important;
 }
 
-/* アンカー直下に自動で入る spacer を潰す（直下子と markdown 経由の両方）*/
+/* 1) アンカーを含む stVerticalBlock の親を赤枠で表示（直下/markdown経由どちらも）*/
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor){
+  outline:2px solid #ff3b30 !important;      /* 赤 */
+  outline-offset:2px !important;
+  position:relative;
+}
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor)::before,
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor)::before{
+  content:"PARENT hits :has(.g-tight-anchor)";
+  position:absolute; top:-10px; left:0;
+  font-size:10px; color:#ff3b30; background:#1e1e1e; padding:0 4px;
+}
+
+/* 2) Markdown ラッパ（アンカーがこの中に入っていないか？）*/
+div[data-testid="stMarkdown"]{
+  outline:2px dashed #0a84ff !important;     /* 青 */
+  outline-offset:2px !important;
+  position:relative;
+}
+div[data-testid="stMarkdown"]::before{
+  content:"stMarkdown";
+  position:absolute; top:-10px; left:0;
+  font-size:10px; color:#0a84ff; background:#1e1e1e; padding:0 4px;
+}
+
+/* 3) 各要素の element-container を緑枠で */
+div[data-testid="element-container"]{
+  outline:1px solid #30d158 !important;      /* 緑 */
+  outline-offset:1px !important;
+  position:relative;
+}
+div[data-testid="element-container"]::before{
+  content:"element-container";
+  position:absolute; top:-10px; left:0;
+  font-size:10px; color:#30d158; background:#1e1e1e; padding:0 4px;
+}
+
+/* 4) Spacer（余白）を黄色で帯表示 */
+div[data-testid="stSpacer"]{
+  background:rgba(255, 214, 10, .3) !important;  /* 黄 */
+  min-height:6px !important;
+  position:relative;
+}
+div[data-testid="stSpacer"]::before{
+  content:"stSpacer";
+  position:absolute; top:-10px; left:0;
+  font-size:10px; color:#ffd60a; background:#1e1e1e; padding:0 4px;
+}
+
+/* 5) components.html の iframe を水色の細枠で */
+iframe{
+  outline:1px dotted #64d2ff !important;     /* 水色 */
+  outline-offset:1px !important;
+}
+
+/* === 実際の詰めロジック（確認のために残す）=== */
+div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor),
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor){
+  gap:.25rem !important;
+  row-gap:.25rem !important;
+}
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) > div[data-testid="stSpacer"],
 div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) > div[data-testid="stSpacer"]{
   height:0 !important;
 }
-
-/* components.html の element-container のマージン/パディングを詰める */
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) div[data-testid="element-container"]:has(> iframe),
 div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) div[data-testid="element-container"]:has(> iframe){
-  margin:0 !important;
-  padding:0 !important;
-}
-
-/* iframe 自体も極小化（安全側）*/
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) iframe,
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) iframe{
-  width:0 !important; height:0 !important; display:block !important;
-}
-
-/* 見出し・エキスパンダの頭の余白をさらに詰める */
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) h3,
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) h3{
-  margin-bottom:.25rem !important;
+  margin:0 !important; padding:0 !important;
 }
 div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) details.st-expander,
 div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) details.st-expander{
   margin-top:0 !important;
 }
-
-/* アンカー直下の element-container 自体の下マージンも削る（全要素に効かせる）*/
-div[data-testid="stVerticalBlock"]:has(> .g-tight-anchor) > div[data-testid="element-container"],
-div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] .g-tight-anchor) > div[data-testid="element-container"]{
-  margin-bottom:.25rem !important;
-}
 </style>
 """, unsafe_allow_html=True)
+
 # ==============================
 # 社員UI
 # ==============================
