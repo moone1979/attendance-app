@@ -1280,17 +1280,20 @@ if "gps_error" not in st.session_state:
 if "gps_click_token" not in st.session_state:
     st.session_state.gps_click_token = 0.0  # ボタン押下トリガ
 
-# 位置情報UIの直前に一度だけCSSを注入
 st.markdown("""
 <style>
-  /* ラッパーの下余白を消す（親gapの影響を最小化）*/
-  .gps-block { margin-bottom: 0 !important; }
-  /* ラッパー内ボタンの上余白もゼロでキュッと */
-  .gps-block .stButton > button { margin-top: 0 !important; }
-  /* ラッパー直下に来る expander の余白も詰める */
-  .gps-block details.st-expander { margin-top: 4px !important; }
+/* ラッパー内のブロック間ギャップを縮める */
+.g-tight [data-testid="stVerticalBlock"] { row-gap: .25rem !important; }
+
+/* 念のため、ボタン上の余白もゼロ */
+.g-tight .stButton > button { margin-top: 0 !important; }
+
+/* expanderの頭を少しだけ上げる（好みで調整） */
+.g-tight details.st-expander { margin-top: 2px !important; }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('<div class="g-tight">', unsafe_allow_html=True)
 
 st.markdown("### 📍 位置情報")
 col_g1, col_g2 = st.columns([1, 3])
@@ -1522,6 +1525,9 @@ with st.expander(f"📋 月別履歴（{start_date:%Y/%m/%d}～{end_date:%Y/%m/%
         )
         st.subheader(f"⏱️ 合計残業時間：{format_hours_minutes(df_self['残業時間'].sum())}")
 
+# —— ラッパー終わり（ここで閉じる）——
+st.markdown('</div>', unsafe_allow_html=True)
+
 # ==============================
 # 修正 / 削除（社員本人のみ）
 # ==============================
@@ -1745,6 +1751,3 @@ df_self_month = df[
 
 total_ot_hours = float(df_self_month["残業時間"].fillna(0).astype(float).sum())
 st.markdown(f"**⏱️ 当月の合計残業時間：{format_hours_minutes(total_ot_hours)}**")
-
-# —— ラッパー終わり（ここで閉じる）——
-st.markdown('</div>', unsafe_allow_html=True)
