@@ -605,7 +605,7 @@ if is_admin:
         total_ot = df_admin_user["承認残業時間"].sum()
 
         # ✅ インデックスにしない
-        cols = ["日付", "出勤", "退勤", "勤務H", "残業H"]
+        cols = ["日付", "出勤", "退勤", "勤務H", "残業H", "残業H(承認)"]
         st.dataframe(
             df_show[cols],
             hide_index=True,
@@ -654,6 +654,7 @@ if is_admin:
                 use_container_width=True
             )
             total_ot = df_admin_user["残業時間"].sum()
+            total_ot = df_admin_user["承認残業時間"].sum() 
             st.subheader(f"⏱️ 合計残業時間：{format_hours_minutes(total_ot)}")
 
         # ===== 修正 =====
@@ -1314,7 +1315,7 @@ if is_admin:
                 for path, cols, fname in BACKUP_TABLES:
                     dfb = _read_existing_or_empty(path, cols)
                     content = dfb[cols].to_csv(index=False)      # ← ここは文字列
-                    zf.writestr(fname, content.encode("cp932"))  # ← ここでcp932にエンコードして格納
+                    zf.writestr(fname, content.encode("cp932", errors="replace"))  # ← ここでcp932にエンコードして格納
 
             # ダウンロードボタン（押した瞬間にDL開始）
             st.download_button(
