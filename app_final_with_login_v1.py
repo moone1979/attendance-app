@@ -883,11 +883,21 @@ if is_admin:
         mask_period = (ot["対象日"]>=start_s) & (ot["対象日"]<=end_s)
 
         col1, col2, col3 = st.columns([2,2,1.4])
-        with col1:
-            status_filter = st.multiselect("対象ステータス", ["申請済","承認","却下"], default=["申請済"])
-        with col2:
-            dept_options = sorted([d for d in ot["部署"].dropna().unique().tolist() if str(d).strip()])
-            dept_filter = st.multiselect("部署で絞り込み", dept_options, default=[])
+        with colf1:
+            status_filter = st.multiselect(
+                "対象ステータス",
+                ["申請済", "承認", "却下"],
+                default=["申請済"],
+                key="admin_holiday_status_filter"   # ← 追加
+            )
+        with colf2:
+            dept_options = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
+            dept_filter = st.multiselect(
+                "部署で絞り込み",
+                dept_options,
+                default=[],
+                key="admin_holiday_dept_filter"     # ← 追加
+            )
         with col3:
             st.caption(f"期間: {start_s} ～ {end_s}")
 
