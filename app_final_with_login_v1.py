@@ -880,30 +880,30 @@ if is_admin:
     with st.expander("✅ 残業申請の承認／却下（管理者）", expanded=False):
         ot = read_overtime_csv().merge(df_login[["社員ID","部署"]], on="社員ID", how="left")
         start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
-        mask_period = (ot["対象日"] >= start_s) & (ot["対象日"] <= end_s)
+        mask_period = (ot["対象日"]>=start_s) & (ot["対象日"]<=end_s)
 
-        col1, col2, col3 = st.columns([2, 2, 1.4])
+        col1, col2, col3 = st.columns([2,2,1.4])
         with col1:
-            ot_status_filter = st.multiselect(
+            status_filter_ot = st.multiselect(
                 "対象ステータス",
                 ["申請済", "承認", "却下"],
                 default=["申請済"],
-                key="admin_overtime_status_filter"    # ★ ユニーク（残業用）
+                key="admin_overtime_status_filter"   # ← 残業用の固有キー
             )
         with col2:
-            ot_dept_options = sorted([d for d in ot["部署"].dropna().unique().tolist() if str(d).strip()])
-            ot_dept_filter = st.multiselect(
+            dept_options_ot = sorted([d for d in ot["部署"].dropna().unique().tolist() if str(d).strip()])
+            dept_filter_ot = st.multiselect(
                 "部署で絞り込み",
-                ot_dept_options,
+                dept_options_ot,
                 default=[],
-                key="admin_overtime_dept_filter"      # ★ ユニーク（残業用）
+                key="admin_overtime_dept_filter"     # ← 残業用の固有キー
             )
         with col3:
             st.caption(f"期間: {start_s} ～ {end_s}")
 
         m = mask_period
-        if status_filter: m &= ot["ステータス"].isin(status_filter)
-        if dept_filter:   m &= ot["部署"].isin(dept_filter)
+        if status_filter_ot: m &= ot["ステータス"].isin(status_filter_ot)
+        if dept_filter_ot:   m &= ot["部署"].isin(dept_filter_ot)
 
         view = ot.loc[m, ["社員ID","氏名","部署","対象日","申請日時","申請残業H","申請理由","ステータス","承認者","承認日時","却下理由"]].copy()
         view = view.sort_values(["ステータス","対象日","社員ID"])
@@ -1020,35 +1020,31 @@ if is_admin:
     # ==============================
     with st.expander("✅ 休日申請の承認／却下（管理者）", expanded=False):
         hd = read_holiday_csv().merge(df_login[["社員ID", "部署"]], on="社員ID", how="left")
-
-        start_s = start_date.strftime("%Y-%m-%d")
-        end_s   = end_date.strftime("%Y-%m-%d")
+        start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
         period_mask = (hd["休暇日"] >= start_s) & (hd["休暇日"] <= end_s)
 
         col1, col2, col3 = st.columns([2, 2, 1.4])
         with col1:
-            hd_status_filter = st.multiselect(
+            status_filter_hd = st.multiselect(
                 "対象ステータス",
                 ["申請済", "承認", "却下"],
                 default=["申請済"],
-                key="admin_holiday_status_filter"     # ★ ユニーク（休日用）
+                key="admin_holiday_status_filter"   # ← 休日用の固有キー
             )
         with col2:
-            hd_dept_options = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
-            hd_dept_filter = st.multiselect(
+            dept_options_hd = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
+            dept_filter_hd = st.multiselect(
                 "部署で絞り込み",
-                hd_dept_options,
+                dept_options_hd,
                 default=[],
-                key="admin_holiday_dept_filter"       # ★ ユニーク（休日用）
+                key="admin_holiday_dept_filter"     # ← 休日用の固有キー
             )
         with col3:
             st.caption(f"期間: {start_s} ～ {end_s}")
 
         mask = period_mask
-        if status_filter:
-            mask &= hd["ステータス"].isin(status_filter)
-        if dept_filter:
-            mask &= hd["部署"].isin(dept_filter)
+        if status_filter_hd: mask &= hd["ステータス"].isin(status_filter_hd)
+        if dept_filter_hd:   mask &= hd["部署"].isin(dept_filter_hd)
 
         hd_view = hd.loc[mask, ["社員ID","氏名","部署","申請日","休暇日","休暇種類","備考","ステータス","承認者","承認日時","却下理由"]].copy()
         hd_view = hd_view.sort_values(["ステータス","休暇日","社員ID"])
@@ -2086,3 +2082,5 @@ df_self_month = df[
 
 total_ot_hours = float(df_self_month["残業時間"].fillna(0).astype(float).sum())
 st.markdown(f"**⏱️ 当月の合計残業時間：{format_hours_minutes(total_ot_hours)}**")
+
+st.caption("build: 2025-09-01 22:15 JPY v2")
