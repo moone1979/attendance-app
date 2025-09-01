@@ -1517,7 +1517,6 @@ if "gps_click_token" not in st.session_state:
 
 # ===== ここから “ギャップを詰めたい範囲” を本物の親で囲む =====
 with st.container():
-    st.markdown("### 📍 位置情報")
     col_g1, col_g2 = st.columns([1, 3])
     with col_g1:
         # 押下でトークン更新→即 rerun（JS が新トークンを拾ってポップアップ起動）
@@ -1537,7 +1536,7 @@ with st.container():
         elif st.session_state.gps_error:
             st.warning("取得失敗: " + st.session_state.gps_error)
         else:
-            st.caption("未取得です（必要なら上のボタンを押してください）")
+            st.caption("未取得です（位置情報を取得してください）")
 
     # ---- geolocation 実行用（keyは渡さない）----
     TOKEN_VAL = float(st.session_state.get("gps_click_token", 0) or 0)
