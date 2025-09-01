@@ -880,23 +880,23 @@ if is_admin:
     with st.expander("✅ 残業申請の承認／却下（管理者）", expanded=False):
         ot = read_overtime_csv().merge(df_login[["社員ID","部署"]], on="社員ID", how="left")
         start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
-        mask_period = (ot["対象日"]>=start_s) & (ot["対象日"]<=end_s)
+        mask_period = (ot["対象日"] >= start_s) & (ot["対象日"] <= end_s)
 
-        col1, col2, col3 = st.columns([2,2,1.4])
-        with colf1:
-            status_filter = st.multiselect(
+        col1, col2, col3 = st.columns([2, 2, 1.4])
+        with col1:
+            ot_status_filter = st.multiselect(
                 "対象ステータス",
                 ["申請済", "承認", "却下"],
                 default=["申請済"],
-                key="admin_holiday_status_filter"   # ← 追加
+                key="admin_overtime_status_filter"    # ★ ユニーク（残業用）
             )
-        with colf2:
-            dept_options = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
-            dept_filter = st.multiselect(
+        with col2:
+            ot_dept_options = sorted([d for d in ot["部署"].dropna().unique().tolist() if str(d).strip()])
+            ot_dept_filter = st.multiselect(
                 "部署で絞り込み",
-                dept_options,
+                ot_dept_options,
                 default=[],
-                key="admin_holiday_dept_filter"     # ← 追加
+                key="admin_overtime_dept_filter"      # ★ ユニーク（残業用）
             )
         with col3:
             st.caption(f"期間: {start_s} ～ {end_s}")
@@ -1019,24 +1019,29 @@ if is_admin:
     # 管理者：休日申請の承認／却下  ←★ ここを is_admin 内に配置
     # ==============================
     with st.expander("✅ 休日申請の承認／却下（管理者）", expanded=False):
-        hd = read_holiday_csv()
+        hd = read_holiday_csv().merge(df_login[["社員ID", "部署"]], on="社員ID", how="left")
 
-        # 申請に部署を付与（社員マスタ JOIN）
-        hd = hd.merge(df_login[["社員ID", "部署"]], on="社員ID", how="left")
-
-        # 期間フィルタ（締め期間）
         start_s = start_date.strftime("%Y-%m-%d")
         end_s   = end_date.strftime("%Y-%m-%d")
         period_mask = (hd["休暇日"] >= start_s) & (hd["休暇日"] <= end_s)
 
-        # 絞り込みUI
-        colf1, colf2, colf3 = st.columns([2, 2, 1.4])
-        with colf1:
-            status_filter = st.multiselect("対象ステータス", ["申請済", "承認", "却下"], default=["申請済"])
-        with colf2:
-            dept_options = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
-            dept_filter = st.multiselect("部署で絞り込み", dept_options, default=[])
-        with colf3:
+        col1, col2, col3 = st.columns([2, 2, 1.4])
+        with col1:
+            hd_status_filter = st.multiselect(
+                "対象ステータス",
+                ["申請済", "承認", "却下"],
+                default=["申請済"],
+                key="admin_holiday_status_filter"     # ★ ユニーク（休日用）
+            )
+        with col2:
+            hd_dept_options = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
+            hd_dept_filter = st.multiselect(
+                "部署で絞り込み",
+                hd_dept_options,
+                default=[],
+                key="admin_holiday_dept_filter"       # ★ ユニーク（休日用）
+            )
+        with col3:
             st.caption(f"期間: {start_s} ～ {end_s}")
 
         mask = period_mask
