@@ -602,7 +602,7 @@ if is_admin:
         df_show["残業H(承認)"] = df_show["承認残業時間"].astype(float).apply(format_hours_minutes)
 
         # ✅ 合計残業（承認のみ）
-        total_ot = df_admin_user["合計残業時間"].sum()
+        total_ot = df_admin_user["承認残業時間"].sum()
 
         # ✅ インデックスにしない
         cols = ["日付", "出勤", "退勤", "勤務H", "残業H"]
