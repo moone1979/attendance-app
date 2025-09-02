@@ -583,282 +583,645 @@ df = apply_approved_overtime(df)
 # ==============================
 # 分岐：管理者 or 社員
 # ==============================
+# ==============================
+# 管理者UI（サイドバー切替付き）
+# ==============================
 if is_admin:
-    st.header("🛠️ 管理者メニュー：全社員の出退勤管理")
-
-    # 文字化け修復（初回のみ想定）
-    with st.expander("🧹 文字化け修復（氏名を社員マスタで一括上書き）", expanded=False):
-        st.caption("※ 初回運用で氏名の文字化けが発生した場合のみ使用してください。")
-        if st.button("氏名を一括修復して保存"):
-            base = _read_csv_flexible(CSV_PATH).fillna("")
-            base = base.drop(columns=["氏名"], errors="ignore") \
-                       .merge(df_login[["社員ID","氏名"]], on="社員ID", how="left")
-
-            if safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
-                st.success("氏名を社員マスタで上書きしました。")
-                time.sleep(1.0)
-                st.rerun()
-
-    # 社員選択（admin を除外）
-    all_users = (
-        df_login[df_login["社員ID"].astype(str).str.strip() != "admin"][["社員ID", "氏名"]]
-        .drop_duplicates()
-        .copy()
+    # ▼ 管理者用サイドバー切替
+    admin_menu = st.sidebar.radio(
+        "📑 管理メニュー",
+        ["各自の出退勤確認", "申請（承認/却下）", "ダウンロード・保守"],
+        index=0,
+        key="admin_main_view_selector"
     )
 
-    if all_users.empty:
-        st.warning("社員マスタに表示可能な社員がいません（adminのみの可能性）。")
-        st.stop()
+    # ---------------------------------
+    # A) 各自の出退勤確認
+    # ---------------------------------
+    if admin_menu == "各自の出退勤確認":
+        st.header("👥 各自の出退勤確認")
 
-    all_users["表示名"] = all_users["社員ID"].astype(str).str.strip() + "：" + all_users["氏名"].astype(str).str.strip()
-
-    selected_label = st.selectbox("社員を選択して出退勤履歴を表示", all_users["表示名"])
-
-    # 選択結果からID/氏名を復元
-    selected_user_id = selected_label.split("：", 1)[0]
-    selected_user_name = all_users.loc[all_users["社員ID"].astype(str).str.strip() == selected_user_id, "氏名"].values[0]
-
-
-    # 期間＆対象社員で絞り込み
-    df_admin_user = df[(df["社員ID"] == selected_user_id) &
-                       (df["日付"] >= start_date) &
-                       (df["日付"] <= end_date)].sort_values("日付")
-
-    if df_admin_user.empty:
-        st.info(f"{selected_user_name} さんのこの月の出退勤記録はありません。")
-    else:
-        # 表示整形
-        df_show = df_admin_user.copy()
-        df_show["日付"] = df_show["日付"].dt.strftime("%Y-%m-%d")
-        df_show = df_show.rename(columns={
-            "日付": "日付", "出勤時刻": "出勤", "退勤時刻": "退勤",
-            "勤務時間": "勤務H", "残業時間": "残業H"
-        })
-        df_show["勤務H"] = df_show["勤務H"].astype(float).apply(format_hours_minutes)
-        df_show["残業H"] = df_show["残業H"].astype(float).apply(format_hours_minutes)
-        df_show["残業H(承認)"] = df_show["承認残業時間"].astype(float).apply(format_hours_minutes)
-
-        # ✅ 合計残業（承認のみ）
-        total_ot = df_admin_user["承認残業時間"].sum()
-
-        # ✅ インデックスにしない
-        cols = ["日付", "出勤", "退勤", "勤務H", "残業H", "残業H(承認)"]
-        st.dataframe(
-            df_show[cols],
-            hide_index=True,
-            use_container_width=True
+        # 社員選択（admin を除外）
+        all_users = (
+            df_login[df_login["社員ID"].astype(str).str.strip() != "admin"][["社員ID", "氏名"]]
+            .drop_duplicates()
+            .copy()
         )
-        gps_df = (df_admin_user[["日付", "緯度", "経度"]].copy()
-                  if {"緯度","経度"}.issubset(df_admin_user.columns)
-                  else pd.DataFrame(columns=["日付","緯度","経度"]))
-        if not gps_df.empty:
-            gps_df["日付"] = gps_df["日付"].dt.strftime("%Y-%m-%d")
-            gps_df["GoogleMapリンク"] = gps_df.apply(
-                lambda r: f"[地図で見る](https://www.google.com/maps?q={r['緯度']},{r['経度']})"
-                if (pd.notna(r["緯度"]) and pd.notna(r["経度"]) and str(r["緯度"])!="")
-                else "未取得",
-                axis=1
-            )
 
-        # ← ← ここを「データあり」の中に移動（未定義参照の防止）
-        with st.expander(f"📍 位置情報（{selected_user_name} さん）", expanded=False):
-            if not gps_df.empty:
-                links_df = gps_df.copy()
-                links_df["GoogleMap"] = links_df.apply(
-                    lambda r: f"https://www.google.com/maps?q={r['緯度']},{r['経度']}"
-                    if (str(r.get("緯度","")).strip() and str(r.get("経度","")).strip()) else "",
-                    axis=1
-                )
-                links_df = links_df[["日付", "GoogleMap"]]
-                try:
-                    st.dataframe(
-                        links_df, hide_index=True, use_container_width=True,
-                        column_config={
-                            "日付": st.column_config.TextColumn("日付"),
-                            "GoogleMap": st.column_config.LinkColumn("地図で見る", display_text="地図で見る"),
-                        }
-                    )
-                except Exception:
-                    # Fallback: 文字列リンクをそのまま表示
-                    st.dataframe(links_df.rename(columns={"GoogleMap": "地図URL"}), hide_index=True, use_container_width=True)
-            else:
-                st.caption("位置情報はありません。")
+        if all_users.empty:
+            st.warning("社員マスタに表示可能な社員がいません（adminのみの可能性）。")
+            st.stop()
 
+        all_users["表示名"] = all_users["社員ID"].astype(str).str.strip() + "：" + all_users["氏名"].astype(str).str.strip()
+        selected_label = st.selectbox("社員を選択して出退勤履歴を表示", all_users["表示名"])
+        selected_user_id = selected_label.split("：", 1)[0]
+        selected_user_name = all_users.loc[
+            all_users["社員ID"].astype(str).str.strip() == selected_user_id, "氏名"
+        ].values[0]
 
-        with st.expander(f"📄 出退勤履歴（{selected_user_name} さん）", expanded=False):
+        # 期間＆対象社員で絞り込み
+        df_admin_user = df[
+            (df["社員ID"] == selected_user_id) &
+            (df["日付"] >= start_date) &
+            (df["日付"] <= end_date)
+        ].sort_values("日付")
+
+        if df_admin_user.empty:
+            st.info(f"{selected_user_name} さんのこの月の出退勤記録はありません。")
+        else:
+            # 表示整形
+            df_show = df_admin_user.copy()
+            df_show["日付"] = df_show["日付"].dt.strftime("%Y-%m-%d")
+            df_show = df_show.rename(columns={
+                "日付": "日付", "出勤時刻": "出勤", "退勤時刻": "退勤",
+                "勤務時間": "勤務H", "残業時間": "残業H"
+            })
+            df_show["勤務H"] = df_show["勤務H"].astype(float).apply(format_hours_minutes)
+            df_show["残業H"] = df_show["残業H"].astype(float).apply(format_hours_minutes)
+            df_show["残業H(承認)"] = df_show["承認残業時間"].astype(float).apply(format_hours_minutes)
+
             st.dataframe(
-                df_show[["日付","出勤", "退勤", "勤務H", "残業H"]],
+                df_show[["日付", "出勤", "退勤", "勤務H", "残業H", "残業H(承認)"]],
                 hide_index=True,
                 use_container_width=True
             )
 
-            # 修正：合計の算出
-            total_ot_calc = float(df_admin_user["残業時間"].sum())
-            total_ot_approved = float(df_admin_user["承認残業時間"].sum())
-
-            st.subheader(f"⏱️ 合計残業時間（自動計算）：{format_hours_minutes(total_ot_calc)}")
-            st.subheader(f"✅ 合計残業時間（承認反映）：{format_hours_minutes(total_ot_approved)}")
-
-
-        # ===== 修正 =====
-        with st.expander(f"✏️ 出退勤の修正（{selected_user_name} さん）", expanded=False):
-            edit_df = df_admin_user[["日付", "出勤時刻", "退勤時刻"]].copy().sort_values("日付")
-            edit_df["日付"] = edit_df["日付"].dt.strftime("%Y-%m-%d")
-            edit_df = edit_df.reset_index(drop=True)
-
-            edited = st.data_editor(
-                edit_df,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                column_config={
-                    "日付": st.column_config.TextColumn("日付", disabled=True),
-                    "出勤時刻": st.column_config.TextColumn("出勤時刻（HH:MM）"),
-                    "退勤時刻": st.column_config.TextColumn("退勤時刻（HH:MM）"),
-                },
-                key="admin_edit_editor",
+            # 位置情報
+            gps_df = (
+                df_admin_user[["日付", "緯度", "経度"]].copy()
+                if {"緯度", "経度"}.issubset(df_admin_user.columns) else
+                pd.DataFrame(columns=["日付", "緯度", "経度"])
             )
+            if not gps_df.empty:
+                gps_df["日付"] = gps_df["日付"].dt.strftime("%Y-%m-%d")
 
-            if st.button("💾 修正内容を保存", type="primary", key="admin_save_edits"):
-                base = _read_csv_flexible(CSV_PATH).fillna("")
-                errors = []; updated = False
-                for _, r in edited.iterrows():
-                    d  = str(r["日付"])
-                    sh = str(r["出勤時刻"]).strip()
-                    eh = str(r["退勤時刻"]).strip()
-                    row_errs = []
-                    if sh and not _is_hhmm(sh): row_errs.append(f"{d} の出勤時刻が不正: {sh}")
-                    if eh and not _is_hhmm(eh): row_errs.append(f"{d} の退勤時刻が不正: {eh}")
-                    if row_errs:
-                        errors.extend(row_errs)
-                        continue  # ← エラー行だけ飛ばす
+            with st.expander(f"📍 位置情報（{selected_user_name} さん）", expanded=False):
+                if not gps_df.empty:
+                    links_df = gps_df.copy()
+                    links_df["GoogleMap"] = links_df.apply(
+                        lambda r: (
+                            f"https://www.google.com/maps?q={r['緯度']},{r['経度']}"
+                            if (str(r.get("緯度", "")).strip() and str(r.get("経度", "")).strip()) else ""
+                        ),
+                        axis=1
+                    )
+                    links_df = links_df[["日付", "GoogleMap"]]
+                    try:
+                        st.dataframe(
+                            links_df, hide_index=True, use_container_width=True,
+                            column_config={
+                                "日付": st.column_config.TextColumn("日付"),
+                                "GoogleMap": st.column_config.LinkColumn("地図で見る", display_text="地図で見る"),
+                            }
+                        )
+                    except Exception:
+                        st.dataframe(
+                            links_df.rename(columns={"GoogleMap": "地図URL"}),
+                            hide_index=True, use_container_width=True
+                        )
+                else:
+                    st.caption("位置情報はありません。")
 
-                    m = (base["社員ID"] == selected_user_id) & (base["日付"] == d)
-                    if not m.any():
-                        base = pd.concat([base, pd.DataFrame([{
-                            "社員ID": selected_user_id, "氏名": selected_user_name,
-                            "日付": d, "出勤時刻": sh, "退勤時刻": eh,
-                        }])], ignore_index=True)
-                    else:
-                        if sh != "": base.loc[m, "出勤時刻"] = sh
-                        if eh != "": base.loc[m, "退勤時刻"] = eh
-                    updated = True
+            with st.expander(f"📄 出退勤履歴（{selected_user_name} さん）", expanded=False):
+                st.dataframe(
+                    df_show[["日付", "出勤", "退勤", "勤務H", "残業H"]],
+                    hide_index=True,
+                    use_container_width=True
+                )
+                total_ot_calc = float(df_admin_user["残業時間"].sum())
+                total_ot_approved = float(df_admin_user["承認残業時間"].sum())
+                st.subheader(f"⏱️ 合計残業時間（自動計算）：{format_hours_minutes(total_ot_calc)}")
+                st.subheader(f"✅ 合計残業時間（承認反映）：{format_hours_minutes(total_ot_approved)}")
 
-                if updated and safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
-                    st.success("正常な行は保存しました。最新表示に更新します。")
-                    time.sleep(1.0)
-                    st.rerun()
-                if errors:
-                    st.warning("以下の行は保存できませんでした：\n- " + "\n- ".join(errors))
+            # ===== 修正 =====
+            with st.expander(f"✏️ 出退勤の修正（{selected_user_name} さん）", expanded=False):
+                edit_df = df_admin_user[["日付", "出勤時刻", "退勤時刻"]].copy().sort_values("日付")
+                edit_df["日付"] = edit_df["日付"].dt.strftime("%Y-%m-%d")
+                edit_df = edit_df.reset_index(drop=True)
 
-        # ===== 削除 =====
-        with st.expander(f"🗑️ 出退勤の削除（{selected_user_name} さん）", expanded=False):
-            del_df = df_admin_user[["日付", "出勤時刻", "退勤時刻"]].copy().sort_values("日付")
-            del_df["日付"] = del_df["日付"].dt.strftime("%Y-%m-%d")
-            del_df = del_df.reset_index(drop=True).assign(削除=False)
+                edited = st.data_editor(
+                    edit_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    column_config={
+                        "日付": st.column_config.TextColumn("日付", disabled=True),
+                        "出勤時刻": st.column_config.TextColumn("出勤時刻（HH:MM）"),
+                        "退勤時刻": st.column_config.TextColumn("退勤時刻（HH:MM）"),
+                    },
+                    key="admin_edit_editor",
+                )
 
-            edited_del = st.data_editor(
-                del_df,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                column_config={
-                    "削除": st.column_config.CheckboxColumn("削除", help="削除する行にチェック"),
-                    "日付": st.column_config.TextColumn("日付", disabled=True),
-                    "出勤時刻": st.column_config.TextColumn("出勤時刻", disabled=True),
-                    "退勤時刻": st.column_config.TextColumn("退勤時刻", disabled=True),
-                },
-                key="admin_delete_editor",
-            )
-
-            to_delete = edited_del[edited_del["削除"] == True]["日付"].tolist()
-            col_a, col_b = st.columns([1,2])
-            with col_a:
-                confirm = st.checkbox("本当に削除します", key="admin_delete_confirm")
-            with col_b:
-                if st.button("❌ チェックした行を削除", disabled=(len(to_delete) == 0 or not confirm),
-                             key="admin_delete_button"):
+                if st.button("💾 修正内容を保存", type="primary", key="admin_save_edits"):
                     base = _read_csv_flexible(CSV_PATH).fillna("")
-                    before = len(base)
-                    mask = (base["社員ID"] == selected_user_id) & (base["日付"].isin(to_delete))
-                    base = base[~mask]
-                    removed = before - len(base)
-                    if safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
-                        st.success(f"{removed} 行を削除しました。最新表示に更新します。")
-                        time.sleep(1.0)
-                        st.rerun()
+                    errors = []; updated = False
+                    for _, r in edited.iterrows():
+                        d  = str(r["日付"])
+                        sh = str(r["出勤時刻"]).strip()
+                        eh = str(r["退勤時刻"]).strip()
+                        row_errs = []
+                        if sh and not _is_hhmm(sh): row_errs.append(f"{d} の出勤時刻が不正: {sh}")
+                        if eh and not _is_hhmm(eh): row_errs.append(f"{d} の退勤時刻が不正: {eh}")
+                        if row_errs:
+                            errors.extend(row_errs)
+                            continue
+                        m = (base["社員ID"] == selected_user_id) & (base["日付"] == d)
+                        if not m.any():
+                            base = pd.concat([base, pd.DataFrame([{
+                                "社員ID": selected_user_id, "氏名": selected_user_name,
+                                "日付": d, "出勤時刻": sh, "退勤時刻": eh,
+                            }])], ignore_index=True)
+                        else:
+                            if sh != "": base.loc[m, "出勤時刻"] = sh
+                            if eh != "": base.loc[m, "退勤時刻"] = eh
+                        updated = True
 
-        # ===== エクスポート =====
-        st.markdown("---")
-        export_df = df[(df["日付"] >= start_date) & (df["日付"] <= end_date)].copy()
-        export_df = export_df.drop(columns=["氏名"], errors="ignore") \
-                             .merge(df_login[["社員ID", "氏名"]], on="社員ID", how="left")
-        export_df["日付"] = export_df["日付"].dt.strftime("%Y-%m-%d")
-        cols = ["社員ID","氏名","日付","出勤時刻","退勤時刻","勤務時間","残業時間","承認残業時間"]
-        export_df = export_df.reindex(columns=[c for c in cols if c in export_df.columns])
+                    if updated and safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
+                        st.success("正常な行は保存しました。最新表示に更新します。")
+                        time.sleep(1.0); st.rerun()
+                    if errors:
+                        st.warning("以下の行は保存できませんでした：\n- " + "\n- ".join(errors))
 
-        ym_name = f"{end_date.year}-{end_date.month:02d}"
+            # ===== 削除 =====
+            with st.expander(f"🗑️ 出退勤の削除（{selected_user_name} さん）", expanded=False):
+                del_df = df_admin_user[["日付", "出勤時刻", "退勤時刻"]].copy().sort_values("日付")
+                del_df["日付"] = del_df["日付"].dt.strftime("%Y-%m-%d")
+                del_df = del_df.reset_index(drop=True).assign(削除=False)
 
+                edited_del = st.data_editor(
+                    del_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    column_config={
+                        "削除": st.column_config.CheckboxColumn("削除", help="削除する行にチェック"),
+                        "日付": st.column_config.TextColumn("日付", disabled=True),
+                        "出勤時刻": st.column_config.TextColumn("出勤時刻", disabled=True),
+                        "退勤時刻": st.column_config.TextColumn("退勤時刻", disabled=True),
+                    },
+                    key="admin_delete_editor",
+                )
+                to_delete = edited_del[edited_del["削除"] == True]["日付"].tolist()
+                col_a, col_b = st.columns([1, 2])
+                with col_a:
+                    confirm = st.checkbox("本当に削除します", key="admin_delete_confirm")
+                with col_b:
+                    if st.button("❌ チェックした行を削除", disabled=(len(to_delete) == 0 or not confirm),
+                                 key="admin_delete_button"):
+                        base = _read_csv_flexible(CSV_PATH).fillna("")
+                        before = len(base)
+                        mask = (base["社員ID"] == selected_user_id) & (base["日付"].isin(to_delete))
+                        base = base[~mask]
+                        removed = before - len(base)
+                        if safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
+                            st.success(f"{removed} 行を削除しました。最新表示に更新します。")
+                            time.sleep(1.0); st.rerun()
+
+    # ---------------------------------
+    # B) 申請（承認/却下）
+    # ---------------------------------
+    elif admin_menu == "申請（承認/却下）":
+        st.header("✅ 申請（承認/却下）")
+
+        # --- 残業申請の承認／却下 ---
+        with st.expander("⏱️ 残業申請の承認／却下", expanded=False):
+            ot = read_overtime_csv().merge(df_login[["社員ID","部署"]], on="社員ID", how="left")
+            start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
+            mask_period = (ot["対象日"] >= start_s) & (ot["対象日"] <= end_s)
+
+            col1, col2, col3 = st.columns([2, 2, 1.4])
+            with col1:
+                status_filter_ot = st.multiselect(
+                    "対象ステータス", ["申請済", "承認", "却下"],
+                    default=["申請済"], key="admin_overtime_status_filter"
+                )
+            with col2:
+                dept_options_ot = sorted([d for d in ot["部署"].dropna().unique().tolist() if str(d).strip()])
+                dept_filter_ot = st.multiselect(
+                    "部署で絞り込み", dept_options_ot, default=[], key="admin_overtime_dept_filter"
+                )
+            with col3:
+                st.caption(f"期間: {start_s} ～ {end_s}")
+
+            m = mask_period
+            if status_filter_ot: m &= ot["ステータス"].isin(status_filter_ot)
+            if dept_filter_ot:   m &= ot["部署"].isin(dept_filter_ot)
+
+            ot_view = ot.loc[m, [
+                "社員ID","氏名","部署","対象日","申請日時","申請残業H","申請理由",
+                "ステータス","承認者","承認日時","却下理由"
+            ]].copy().sort_values(["ステータス","対象日","社員ID"])
+
+            if ot_view.empty:
+                st.caption("この条件に該当する申請はありません。")
+            else:
+                ot_view["承認"] = False
+                ot_view["却下"] = False
+                ot_view["承認解除"] = False
+                ot_view["削除"] = False
+                ot_view["却下理由(入力)"] = ""
+
+                edited = st.data_editor(
+                    ot_view, hide_index=True, use_container_width=True,
+                    column_config={
+                        "社員ID": st.column_config.TextColumn("社員ID", disabled=True),
+                        "氏名": st.column_config.TextColumn("氏名", disabled=True),
+                        "部署": st.column_config.TextColumn("部署", disabled=True),
+                        "対象日": st.column_config.TextColumn("対象日", disabled=True),
+                        "申請日時": st.column_config.TextColumn("申請日時", disabled=True),
+                        "申請残業H": st.column_config.TextColumn("申請残業H", disabled=True),
+                        "申請理由": st.column_config.TextColumn("申請理由", disabled=True),
+                        "ステータス": st.column_config.TextColumn("現ステータス", disabled=True),
+                        "承認者": st.column_config.TextColumn("承認者", disabled=True),
+                        "承認日時": st.column_config.TextColumn("承認日時", disabled=True),
+                        "却下理由": st.column_config.TextColumn("却下理由(既存)", disabled=True),
+                        "承認": st.column_config.CheckboxColumn("承認する"),
+                        "却下": st.column_config.CheckboxColumn("却下する"),
+                        "承認解除": st.column_config.CheckboxColumn("承認を取り消す"),
+                        "削除": st.column_config.CheckboxColumn("削除（申請済のみ）"),
+                        "却下理由(入力)": st.column_config.TextColumn("却下理由（入力）"),
+                    },
+                    key="overtime_approvals_editor"
+                )
+
+                colb1, colb2 = st.columns([1, 3])
+                with colb1:
+                    apply_clicked = st.button("💾 選択を反映", type="primary", key="ot_apply")
+                with colb2:
+                    st.caption("※ 同じ行で複数操作は不可。却下時は理由を入力。")
+
+                if apply_clicked:
+                    approver = st.session_state.user_name or "admin"
+                    when_ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+                    base = read_overtime_csv()
+                    applied = 0; conflicts = []; logs = []
+
+                    for _, r in edited.iterrows():
+                        approve = bool(r.get("承認", False))
+                        reject  = bool(r.get("却下", False))
+                        unapp   = bool(r.get("承認解除", False))
+                        delete  = bool(r.get("削除", False))
+                        if sum([approve, reject, unapp, delete]) == 0:
+                            continue
+                        if sum([approve, reject, unapp, delete]) > 1:
+                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 同時に複数操作はできません')
+                            continue
+
+                        km = (
+                            (base["社員ID"] == r["社員ID"]) &
+                            (base["対象日"] == r["対象日"]) &
+                            (base["申請日時"] == r["申請日時"])
+                        )
+                        if not km.any():
+                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 対象が見つかりません')
+                            continue
+
+                        cur = str(base.loc[km, "ステータス"].iloc[0])
+                        if approve:
+                            if cur != "申請済":
+                                conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で承認不可')
+                                continue
+                            base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["承認", approver, when_ts, ""]
+                            new_status = "承認"
+                        elif reject:
+                            if cur != "申請済":
+                                conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で却下不可')
+                                continue
+                            rsn = str(r.get("却下理由(入力)", "")).strip()
+                            if not rsn:
+                                conflicts.append(f'{r["氏名"]} {r["対象日"]}: 却下理由が未入力')
+                                continue
+                            base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["却下", approver, when_ts, rsn]
+                            new_status = "却下"
+                        elif unapp:
+                            if cur != "承認":
+                                conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で承認解除不可')
+                                continue
+                            base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["申請済", "", "", ""]
+                            new_status = "申請済"
+                        else:
+                            if cur != "申請済":
+                                conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で削除不可（申請済のみ）')
+                                continue
+                            base = base.loc[~km].copy()
+                            new_status = "申請削除"
+
+                        applied += int(km.sum())
+                        logs.append({
+                            "timestamp": when_ts, "承認者": approver,
+                            "社員ID": r["社員ID"], "氏名": r["氏名"],
+                            "休暇日": r["対象日"], "申請日": r["申請日時"],
+                            "旧ステータス": cur, "新ステータス": f"残業:{new_status}",
+                            "却下理由": r.get("却下理由(入力)", "")
+                        })
+
+                    if applied > 0:
+                        write_overtime_csv(base)
+                        append_audit_log(logs)
+                        st.success(f"{applied} 件を更新しました。")
+                        time.sleep(1); st.rerun()
+                    if conflicts:
+                        st.warning("一部適用できませんでした：\n- " + "\n- ".join(conflicts))
+
+        # --- 休日申請の承認／却下 ---
+        with st.expander("📅 休日申請の承認／却下", expanded=False):
+            hd = read_holiday_csv().merge(df_login[["社員ID", "部署"]], on="社員ID", how="left")
+            start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
+            period_mask = (hd["休暇日"] >= start_s) & (hd["休暇日"] <= end_s)
+
+            col1, col2, col3 = st.columns([2, 2, 1.4])
+            with col1:
+                status_filter_hd = st.multiselect(
+                    "対象ステータス", ["申請済", "承認", "却下"],
+                    default=["申請済"], key="admin_holiday_status_filter"
+                )
+            with col2:
+                dept_options_hd = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
+                dept_filter_hd = st.multiselect(
+                    "部署で絞り込み", dept_options_hd, default=[], key="admin_holiday_dept_filter"
+                )
+            with col3:
+                st.caption(f"期間: {start_s} ～ {end_s}")
+
+            mask = period_mask
+            if status_filter_hd: mask &= hd["ステータス"].isin(status_filter_hd)
+            if dept_filter_hd:   mask &= hd["部署"].isin(dept_filter_hd)
+
+            hd_view = hd.loc[mask, [
+                "社員ID","氏名","部署","申請日","休暇日","休暇種類","備考",
+                "ステータス","承認者","承認日時","却下理由"
+            ]].copy().sort_values(["ステータス","休暇日","社員ID"])
+
+            if hd_view.empty:
+                st.caption("この条件に該当する申請はありません。")
+            else:
+                hd_view["承認"] = False
+                hd_view["却下"] = False
+                hd_view["却下理由(入力)"] = ""
+                hd_view["承認解除"] = False
+                hd_view["削除"] = False
+
+                edited = st.data_editor(
+                    hd_view, hide_index=True, use_container_width=True,
+                    column_config={
+                        "社員ID": st.column_config.TextColumn("社員ID", disabled=True),
+                        "氏名": st.column_config.TextColumn("氏名", disabled=True),
+                        "部署": st.column_config.TextColumn("部署", disabled=True),
+                        "申請日": st.column_config.TextColumn("申請日", disabled=True),
+                        "休暇日": st.column_config.TextColumn("休暇日", disabled=True),
+                        "休暇種類": st.column_config.TextColumn("休暇種類", disabled=True),
+                        "備考": st.column_config.TextColumn("備考", disabled=True),
+                        "ステータス": st.column_config.TextColumn("現ステータス", disabled=True),
+                        "承認者": st.column_config.TextColumn("承認者", disabled=True),
+                        "承認日時": st.column_config.TextColumn("承認日時", disabled=True),
+                        "却下理由": st.column_config.TextColumn("却下理由(既存)", disabled=True),
+                        "承認": st.column_config.CheckboxColumn("承認する"),
+                        "却下": st.column_config.CheckboxColumn("却下する"),
+                        "却下理由(入力)": st.column_config.TextColumn("却下理由（入力）"),
+                        "承認解除": st.column_config.CheckboxColumn("承認を取り消す"),
+                        "削除": st.column_config.CheckboxColumn("削除（申請済のみ）"),
+                    },
+                    key="holiday_approvals_editor"
+                )
+
+                colb1, colb2 = st.columns([1, 3])
+                with colb1:
+                    apply_clicked = st.button("💾 選択を反映", type="primary")
+                with colb2:
+                    st.caption("※ 同じ行で「承認」と「却下」を同時に選ばないでください。却下時は理由を入力。")
+
+                if apply_clicked:
+                    approver = st.session_state.user_name or "admin"
+                    when_ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+
+                    base = read_holiday_csv()
+                    to_change = []
+                    conflicts = []
+
+                    for _, r in edited.iterrows():
+                        approve   = bool(r.get("承認", False))
+                        reject    = bool(r.get("却下", False))
+                        unapprove = bool(r.get("承認解除", False))
+                        delete_it = bool(r.get("削除", False))
+
+                        if sum([approve, reject, unapprove, delete_it]) == 0:
+                            continue
+                        if sum([approve, reject, unapprove, delete_it]) > 1:
+                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 承認/却下/承認解除/削除は同時に選べません')
+                            continue
+
+                        key_mask = (
+                            (base["社員ID"] == r["社員ID"]) &
+                            (base["休暇日"] == r["休暇日"]) &
+                            (base["申請日"] == r["申請日"])
+                        )
+                        if not key_mask.any():
+                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 対象レコードが見つかりません')
+                            continue
+
+                        cur_status = str(base.loc[key_mask, "ステータス"].iloc[0])
+
+                        if approve:
+                            if cur_status != "申請済":
+                                conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため承認できません')
+                                continue
+                            action, reason = "承認", ""
+                        elif reject:
+                            if cur_status != "申請済":
+                                conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため却下できません')
+                                continue
+                            reason = str(r.get("却下理由(入力)", "")).strip()
+                            if not reason:
+                                conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 却下理由が未入力')
+                                continue
+                            action = "却下"
+                        elif unapprove:
+                            if cur_status != "承認":
+                                conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため承認解除できません')
+                                continue
+                            action, reason = "承認解除", ""
+                        else:
+                            if cur_status != "申請済":
+                                conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため削除できません')
+                                continue
+                            action, reason = "削除", ""
+
+                        to_change.append({
+                            "社員ID": r["社員ID"], "氏名": r["氏名"],
+                            "休暇日": r["休暇日"], "申請日": r["申請日"],
+                            "action": action, "reason": reason, "old_status": cur_status
+                        })
+
+                    if not to_change and not conflicts:
+                        st.info("変更はありません。")
+                    else:
+                        latest = read_holiday_csv()
+                        applied = 0
+                        audit_rows = []
+
+                        for ch in to_change:
+                            km = (
+                                (latest["社員ID"] == ch["社員ID"]) &
+                                (latest["休暇日"] == ch["休暇日"]) &
+                                (latest["申請日"] == ch["申請日"])
+                            )
+                            if not km.any():
+                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に削除/変更され見つかりません')
+                                continue
+
+                            cur2 = str(latest.loc[km, "ステータス"].iloc[0])
+                            if ch["action"] in ("承認", "却下") and cur2 != "申請済":
+                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ')
+                                continue
+                            if ch["action"] == "承認解除" and cur2 != "承認":
+                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ')
+                                continue
+
+                            if ch["action"] == "承認":
+                                latest.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["承認", approver, when_ts, ""]
+                                new_status_for_audit = "承認"
+                            elif ch["action"] == "却下":
+                                latest.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["却下", approver, when_ts, ch["reason"]]
+                                new_status_for_audit = "却下"
+                            elif ch["action"] == "承認解除":
+                                latest.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["申請済", "", "", ""]
+                                new_status_for_audit = "申請済"
+                            else:  # 削除
+                                latest = latest.loc[~km].copy()
+                                new_status_for_audit = "申請削除"
+
+                            applied += int(km.sum())
+                            audit_rows.append({
+                                "timestamp": when_ts, "承認者": approver,
+                                "社員ID": ch["社員ID"], "氏名": ch["氏名"],
+                                "休暇日": ch["休暇日"], "申請日": ch["申請日"],
+                                "旧ステータス": ch["old_status"], "新ステータス": new_status_for_audit,
+                                "却下理由": ch["reason"],
+                            })
+
+                        if applied > 0:
+                            write_holiday_csv(latest)
+                            append_audit_log(audit_rows)
+                            st.success(f"{applied} 件を更新しました。")
+
+                        if conflicts:
+                            st.warning("一部の行は適用できませんでした：\n- " + "\n- ".join(conflicts))
+
+                        if applied > 0:
+                            time.sleep(1.0); st.rerun()
+
+        # --- 監査ログ ---
+        with st.expander("📝 監査ログ（承認/却下の履歴）", expanded=False):
+            if os.path.exists(AUDIT_LOG_CSV):
+                try:
+                    log_df = pd.read_csv(AUDIT_LOG_CSV, dtype=str, encoding="utf-8-sig").fillna("")
+                except UnicodeDecodeError:
+                    log_df = pd.read_csv(AUDIT_LOG_CSV, dtype=str, encoding="cp932", encoding_errors="replace").fillna("")
+            else:
+                log_df = pd.DataFrame(columns=AUDIT_COLUMNS)
+
+            if log_df.empty:
+                st.caption("監査ログはまだありません。")
+            else:
+                start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
+                col1, col2, col3 = st.columns([1.4, 1.4, 2])
+                with col1:
+                    date_from = st.text_input("開始日 (YYYY-MM-DD)", value=start_s)
+                with col2:
+                    date_to   = st.text_input("終了日 (YYYY-MM-DD)", value=end_s)
+                with col3:
+                    approver = st.text_input("承認者で絞り込み（任意）", value="")
+
+                dfv = log_df.copy()
+                if date_from: dfv = dfv[dfv["timestamp"].str[:10] >= date_from]
+                if date_to:   dfv = dfv[dfv["timestamp"].str[:10] <= date_to]
+                if approver.strip(): dfv = dfv[dfv["承認者"].str.contains(approver.strip(), na=False)]
+
+                show = dfv[["timestamp","承認者","社員ID","氏名","休暇日","申請日","旧ステータス","新ステータス","却下理由"]]\
+                       .sort_values(["timestamp"], ascending=False)
+                st.dataframe(show, hide_index=True, use_container_width=True)
+
+                xls_buf = io.BytesIO()
+                with pd.ExcelWriter(xls_buf, engine="openpyxl") as writer:
+                    show.to_excel(writer, index=False, sheet_name="監査ログ")
+                st.download_button(
+                    "⬇️ 監査ログをExcelでダウンロード",
+                    data=xls_buf.getvalue(),
+                    file_name=f"監査ログ_{start_s}_to_{end_s}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+    # ---------------------------------
+    # C) ダウンロード・保守
+    # ---------------------------------
+    else:
+        st.header("📦 ダウンロード・保守")
+
+        # 文字化け修復
+        with st.expander("🧹 文字化け修復（氏名を社員マスタで一括上書き）", expanded=False):
+            st.caption("※ 初回運用で氏名の文字化けが発生した場合のみ使用してください。")
+            if st.button("氏名を一括修復して保存"):
+                base = _read_csv_flexible(CSV_PATH).fillna("")
+                base = base.drop(columns=["氏名"], errors="ignore") \
+                           .merge(df_login[["社員ID","氏名"]], on="社員ID", how="left")
+                if safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
+                    st.success("氏名を社員マスタで上書きしました。")
+                    time.sleep(1.0); st.rerun()
+
+        # 全社員のエクスポート（勤務＋休日申請）
         with st.expander("📥 全社員のデータをダウンロード", expanded=False):
-            xls_buf = io.BytesIO()
+            export_df = df[(df["日付"] >= start_date) & (df["日付"] <= end_date)].copy()
+            export_df = export_df.drop(columns=["氏名"], errors="ignore") \
+                                 .merge(df_login[["社員ID", "氏名"]], on="社員ID", how="left")
+            export_df["日付"] = export_df["日付"].dt.strftime("%Y-%m-%d")
+            cols = ["社員ID","氏名","日付","出勤時刻","退勤時刻","勤務時間","残業時間","承認残業時間"]
+            export_df = export_df.reindex(columns=[c for c in cols if c in export_df.columns])
 
-            # ==== 休日申請データを期間で準備（ここで日付型へ変換） ====
+            ym_name = f"{end_date.year}-{end_date.month:02d}"
+
+            # 休日申請データ
             hd_all = read_holiday_csv().merge(df_login[["社員ID", "部署"]], on="社員ID", how="left")
-            start_s = start_date.strftime("%Y-%m-%d")
-            end_s   = end_date.strftime("%Y-%m-%d")
+            start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
             mask = (hd_all["休暇日"] >= start_s) & (hd_all["休暇日"] <= end_s)
-            hd_export = hd_all.loc[mask, ["社員ID","氏名","部署","申請日","休暇日","休暇種類","備考","ステータス","承認者","承認日時","却下理由"]].copy()
-
-            # ▼ Excelで“日付”として扱えるように、pandas側でdatetime型に変換
-            #   申請日/休暇日は日付、承認日時は日時（空文字は NaT に）
+            hd_export = hd_all.loc[mask, [
+                "社員ID","氏名","部署","申請日","休暇日","休暇種類","備考","ステータス","承認者","承認日時","却下理由"
+            ]].copy()
             hd_export["申請日"]   = pd.to_datetime(hd_export["申請日"],   errors="coerce")
             hd_export["休暇日"]   = pd.to_datetime(hd_export["休暇日"],   errors="coerce")
             hd_export["承認日時"] = pd.to_datetime(hd_export["承認日時"], errors="coerce")
-
-            # 並び順
             hd_export = hd_export.sort_values(["休暇日", "社員ID"])
 
+            xls_buf = io.BytesIO()
             with pd.ExcelWriter(xls_buf, engine="openpyxl") as writer:
-                # ==== Sheet1: 勤務実績（既存） ====
                 export_df.to_excel(writer, index=False, sheet_name="勤務実績")
-
-                # ==== Sheet2: 休日申請（新規） ====
                 hd_export.to_excel(writer, index=False, sheet_name="休日申請")
 
                 from openpyxl.utils import get_column_letter
-                from openpyxl.styles import PatternFill
-                from openpyxl.formatting.rule import CellIsRule
-
                 wb  = writer.book
                 ws1 = writer.sheets["勤務実績"]
                 ws2 = writer.sheets["休日申請"]
 
-                # 共通の見やすさ調整
                 def beautify(ws):
-                    ws.auto_filter.ref = ws.dimensions   # オートフィルタ
-                    ws.freeze_panes = "A2"               # ヘッダ固定
-                    # 列幅調整（簡易）
+                    ws.auto_filter.ref = ws.dimensions
+                    ws.freeze_panes = "A2"
                     for col_idx, col_cells in enumerate(ws.columns, start=1):
                         max_len = 0
                         for cell in col_cells:
                             val = "" if cell.value is None else str(cell.value)
-                            if len(val) > max_len:
-                                max_len = len(val)
-                        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 8), 40)
+                            max_len = max(max_len, len(val))
+                        from openpyxl.utils import get_column_letter as gl
+                        ws.column_dimensions[gl(col_idx)].width = min(max(max_len + 2, 8), 40)
 
-                beautify(ws1)
-                beautify(ws2)
+                beautify(ws1); beautify(ws2)
 
-                # ===== 「休日申請」シート 専用フォーマット =====
                 headers = [c.value for c in next(ws2.iter_rows(min_row=1, max_row=1))]
-
                 def col_letter(col_name: str):
-                    idx = headers.index(col_name) + 1  # 1-based
+                    from openpyxl.utils import get_column_letter
+                    idx = headers.index(col_name) + 1
                     return get_column_letter(idx), idx
 
-                # 1) 日付/日時の書式（既存のままでOK）
                 try:
-                    if ws2.max_row >= 2:  # ← ★ データ行があるときだけ適用
+                    if ws2.max_row >= 2:
                         col申請, _ = col_letter("申請日")
                         col休暇, _ = col_letter("休暇日")
                         col承認時, _ = col_letter("承認日時")
@@ -869,31 +1232,18 @@ if is_admin:
                 except ValueError:
                     pass
 
-                # 2) ステータス色分け（データ行がある場合のみ）
                 try:
-                    if ws2.max_row >= 2 and "ステータス" in headers:  # ← ★ ここが重要
-                        colステータス, _ = col_letter("ステータス")
-                        status_range = f"{colステータス}2:{colステータス}{ws2.max_row}"
-
+                    if ws2.max_row >= 2 and "ステータス" in headers:
                         from openpyxl.styles import PatternFill
                         from openpyxl.formatting.rule import CellIsRule
-
+                        colステータス, _ = col_letter("ステータス")
+                        status_range = f"{colステータス}2:{colステータス}{ws2.max_row}"
                         fill_pending  = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
                         fill_approved = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
                         fill_rejected = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
-
-                        ws2.conditional_formatting.add(
-                            status_range,
-                            CellIsRule(operator="equal", formula=['"申請済"'], stopIfTrue=False, fill=fill_pending)
-                        )
-                        ws2.conditional_formatting.add(
-                            status_range,
-                            CellIsRule(operator="equal", formula=['"承認"'], stopIfTrue=False, fill=fill_approved)
-                        )
-                        ws2.conditional_formatting.add(
-                            status_range,
-                            CellIsRule(operator="equal", formula=['"却下"'], stopIfTrue=False, fill=fill_rejected)
-                        )
+                        ws2.conditional_formatting.add(status_range, CellIsRule(operator="equal", formula=['"申請済"'], stopIfTrue=False, fill=fill_pending))
+                        ws2.conditional_formatting.add(status_range, CellIsRule(operator="equal", formula=['"承認"'], stopIfTrue=False, fill=fill_approved))
+                        ws2.conditional_formatting.add(status_range, CellIsRule(operator="equal", formula=['"却下"'], stopIfTrue=False, fill=fill_rejected))
                 except ValueError:
                     pass
 
@@ -903,13 +1253,10 @@ if is_admin:
                 file_name=f"全社員_勤務実績_休日申請_{ym_name}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-
-            # CSVは従来どおり
             try:
                 csv_bytes = export_df.to_csv(index=False, encoding="cp932").encode("cp932", errors="replace")
             except Exception:
                 csv_bytes = export_df.to_csv(index=False).encode("cp932", errors="replace")
-
             st.download_button(
                 "⬇️ CSV(Shift_JIS/cp932)でダウンロード",
                 data=csv_bytes,
@@ -917,599 +1264,139 @@ if is_admin:
                 mime="text/csv",
             )
 
-    # ==============================
-    # 管理者：残業申請の承認／却下  ←★ ここを is_admin 内に配置
-    # ==============================
-    with st.expander("✅ 残業申請の承認／却下（管理者）", expanded=False):
-        ot = read_overtime_csv().merge(df_login[["社員ID","部署"]], on="社員ID", how="left")
-        start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
-        mask_period = (ot["対象日"]>=start_s) & (ot["対象日"]<=end_s)
+        # バックアップ／復元
+        with st.expander("💾 バックアップ（ZIP）／🛠️ 復元（ZIP/CSV）", expanded=False):
+            st.markdown("**推奨運用**：業務終了時に必ずZIPでバックアップ → ローカルPCに保管。")
 
-        col1, col2, col3 = st.columns([2,2,1.4])
-        with col1:
-            status_filter_ot = st.multiselect(
-                "対象ステータス",
-                ["申請済", "承認", "却下"],
-                default=["申請済"],
-                key="admin_overtime_status_filter"   # ← 残業用の固有キー
-            )
-        with col2:
-            dept_options_ot = sorted([d for d in ot["部署"].dropna().unique().tolist() if str(d).strip()])
-            dept_filter_ot = st.multiselect(
-                "部署で絞り込み",
-                dept_options_ot,
-                default=[],
-                key="admin_overtime_dept_filter"     # ← 残業用の固有キー
-            )
-        with col3:
-            st.caption(f"期間: {start_s} ～ {end_s}")
-
-        m = mask_period
-        if status_filter_ot: m &= ot["ステータス"].isin(status_filter_ot)
-        if dept_filter_ot:   m &= ot["部署"].isin(dept_filter_ot)
-
-        ot_view = ot.loc[m, ["社員ID","氏名","部署","対象日","申請日時","申請残業H","申請理由","ステータス","承認者","承認日時","却下理由"]].copy()
-        ot_view = ot_view.sort_values(["ステータス","対象日","社員ID"])
-
-        if ot_view.empty:
-            st.caption("この条件に該当する申請はありません。")
-        else:
-            ot_view["承認"] = False
-            ot_view["却下"] = False
-            ot_view["承認解除"] = False
-            ot_view["削除"] = False
-            ot_view["却下理由(入力)"] = ""
-
-            edited = st.data_editor(
-                ot_view, hide_index=True, use_container_width=True,
-                column_config={
-                    "社員ID": st.column_config.TextColumn("社員ID", disabled=True),
-                    "氏名": st.column_config.TextColumn("氏名", disabled=True),
-                    "部署": st.column_config.TextColumn("部署", disabled=True),
-                    "対象日": st.column_config.TextColumn("対象日", disabled=True),
-                    "申請日時": st.column_config.TextColumn("申請日時", disabled=True),
-                    "申請残業H": st.column_config.TextColumn("申請残業H", disabled=True),
-                    "申請理由": st.column_config.TextColumn("申請理由", disabled=True),
-                    "ステータス": st.column_config.TextColumn("現ステータス", disabled=True),
-                    "承認者": st.column_config.TextColumn("承認者", disabled=True),
-                    "承認日時": st.column_config.TextColumn("承認日時", disabled=True),
-                    "却下理由": st.column_config.TextColumn("却下理由(既存)", disabled=True),
-                    "承認": st.column_config.CheckboxColumn("承認する"),
-                    "却下": st.column_config.CheckboxColumn("却下する"),
-                    "承認解除": st.column_config.CheckboxColumn("承認を取り消す"),
-                    "削除": st.column_config.CheckboxColumn("削除（申請済のみ）"),
-                    "却下理由(入力)": st.column_config.TextColumn("却下理由（入力）"),
-                },
-                key="overtime_approvals_editor"
-            )
-
-            colb1, colb2 = st.columns([1,3])
-            with colb1: apply_clicked = st.button("💾 選択を反映", type="primary", key="ot_apply")
-            with colb2: st.caption("※ 同じ行で複数操作は不可。却下時は理由を入力。")
-
-            if apply_clicked:
-                approver = st.session_state.user_name or "admin"
-                when_ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
-                base = read_overtime_csv()
-                applied = 0; conflicts = []; logs = []
-
-                for _, r in edited.iterrows():
-                    approve = bool(r.get("承認", False))
-                    reject  = bool(r.get("却下", False))
-                    unapp   = bool(r.get("承認解除", False))
-                    delete  = bool(r.get("削除", False))
-                    if sum([approve,reject,unapp,delete]) == 0: continue
-                    if sum([approve,reject,unapp,delete]) > 1:
-                        conflicts.append(f'{r["氏名"]} {r["対象日"]}: 同時に複数操作はできません')
-                        continue
-
-                    km = (
-                        (base["社員ID"]==r["社員ID"]) &
-                        (base["対象日"]==r["対象日"]) &
-                        (base["申請日時"]==r["申請日時"])
-                    )
-                    if not km.any():
-                        conflicts.append(f'{r["氏名"]} {r["対象日"]}: 対象が見つかりません')
-                        continue
-
-                    cur = str(base.loc[km, "ステータス"].iloc[0])
-                    if approve:
-                        if cur != "申請済":
-                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で承認不可')
-                            continue
-                        base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["承認", approver, when_ts, ""]
-                        new_status = "承認"
-                    elif reject:
-                        if cur != "申請済":
-                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で却下不可')
-                            continue
-                        rsn = str(r.get("却下理由(入力)","")).strip()
-                        if not rsn:
-                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 却下理由が未入力')
-                            continue
-                        base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["却下", approver, when_ts, rsn]
-                        new_status = "却下"
-                    elif unapp:
-                        if cur != "承認":
-                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で承認解除不可')
-                            continue
-                        base.loc[km, ["ステータス","承認者","承認日時","却下理由"]] = ["申請済", "", "", ""]
-                        new_status = "申請済"
-                    else:  # delete
-                        if cur != "申請済":
-                            conflicts.append(f'{r["氏名"]} {r["対象日"]}: 現在 {cur} で削除不可（申請済のみ）')
-                            continue
-                        base = base.loc[~km].copy()
-                        new_status = "申請削除"
-
-                    applied += int(km.sum())
-                    logs.append({
-                        "timestamp": when_ts, "承認者": approver,
-                        "社員ID": r["社員ID"], "氏名": r["氏名"],
-                        "休暇日": r["対象日"], "申請日": r["申請日時"],   # 既存ログCSVの列を流用
-                        "旧ステータス": cur, "新ステータス": f"残業:{new_status}", "却下理由": r.get("却下理由(入力)","")
-                    })
-
-                if applied>0:
-                    write_overtime_csv(base)
-                    append_audit_log(logs)
-                    st.success(f"{applied} 件を更新しました。")
-                    time.sleep(1); st.rerun()
-                if conflicts:
-                    st.warning("一部適用できませんでした：\n- " + "\n- ".join(conflicts))
-
-    # ==============================
-    # 管理者：休日申請の承認／却下  ←★ ここを is_admin 内に配置
-    # ==============================
-    with st.expander("✅ 休日申請の承認／却下（管理者）", expanded=False):
-        hd = read_holiday_csv().merge(df_login[["社員ID", "部署"]], on="社員ID", how="left")
-        start_s = start_date.strftime("%Y-%m-%d"); end_s = end_date.strftime("%Y-%m-%d")
-        period_mask = (hd["休暇日"] >= start_s) & (hd["休暇日"] <= end_s)
-
-        col1, col2, col3 = st.columns([2, 2, 1.4])
-        with col1:
-            status_filter_hd = st.multiselect(
-                "対象ステータス",
-                ["申請済", "承認", "却下"],
-                default=["申請済"],
-                key="admin_holiday_status_filter"   # ← 休日用の固有キー
-            )
-        with col2:
-            dept_options_hd = sorted([d for d in hd["部署"].dropna().unique().tolist() if str(d).strip()])
-            dept_filter_hd = st.multiselect(
-                "部署で絞り込み",
-                dept_options_hd,
-                default=[],
-                key="admin_holiday_dept_filter"     # ← 休日用の固有キー
-            )
-        with col3:
-            st.caption(f"期間: {start_s} ～ {end_s}")
-
-        mask = period_mask
-        if status_filter_hd: mask &= hd["ステータス"].isin(status_filter_hd)
-        if dept_filter_hd:   mask &= hd["部署"].isin(dept_filter_hd)
-
-        hd_view = hd.loc[mask, ["社員ID","氏名","部署","申請日","休暇日","休暇種類","備考","ステータス","承認者","承認日時","却下理由"]].copy()
-        hd_view = hd_view.sort_values(["ステータス","休暇日","社員ID"])
-
-        if hd_view.empty:
-            st.caption("この条件に該当する申請はありません。")
-        else:
-            hd_view["承認"] = False
-            hd_view["却下"] = False
-            hd_view["却下理由(入力)"] = ""
-            hd_view["承認解除"] = False
-            hd_view["削除"] = False
-
-            edited = st.data_editor(
-                hd_view,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "社員ID": st.column_config.TextColumn("社員ID", disabled=True),
-                    "氏名": st.column_config.TextColumn("氏名", disabled=True),
-                    "部署": st.column_config.TextColumn("部署", disabled=True),
-                    "申請日": st.column_config.TextColumn("申請日", disabled=True),
-                    "休暇日": st.column_config.TextColumn("休暇日", disabled=True),
-                    "休暇種類": st.column_config.TextColumn("休暇種類", disabled=True),
-                    "備考": st.column_config.TextColumn("備考", disabled=True),
-                    "ステータス": st.column_config.TextColumn("現ステータス", disabled=True),
-                    "承認者": st.column_config.TextColumn("承認者", disabled=True),
-                    "承認日時": st.column_config.TextColumn("承認日時", disabled=True),
-                    "却下理由": st.column_config.TextColumn("却下理由(既存)", disabled=True),
-                    "承認": st.column_config.CheckboxColumn("承認する"),
-                    "却下": st.column_config.CheckboxColumn("却下する"),
-                    "却下理由(入力)": st.column_config.TextColumn("却下理由（入力）"),
-                    # ★ 追加
-                    "承認解除": st.column_config.CheckboxColumn("承認を取り消す"),
-                    "削除": st.column_config.CheckboxColumn("削除（申請済のみ）"),
-                },
-                key="holiday_approvals_editor"
-            )
-
-            colb1, colb2 = st.columns([1, 3])
-            with colb1:
-                apply_clicked = st.button("💾 選択を反映", type="primary")
-            with colb2:
-                st.caption("※ 同じ行で「承認」と「却下」を同時に選ばないでください。却下時は理由を入力。")
-
-            if apply_clicked:
-                approver = st.session_state.user_name or "admin"
-                when_ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
-
-                base = read_holiday_csv()
-                to_change = []
-                conflicts = []
-
-                for _, r in edited.iterrows():
-                    approve   = bool(r.get("承認", False))
-                    reject    = bool(r.get("却下", False))
-                    unapprove = bool(r.get("承認解除", False))
-                    delete_it = bool(r.get("削除", False))  # ★ 追加
-
-                    # いずれか一つだけ
-                    if sum([approve, reject, unapprove, delete_it]) == 0:
-                        continue
-                    if sum([approve, reject, unapprove, delete_it]) > 1:
-                        conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 承認/却下/承認解除/削除は同時に選べません')
-                        continue
-
-                    key_mask = (
-                        (base["社員ID"] == r["社員ID"]) &
-                        (base["休暇日"] == r["休暇日"]) &
-                        (base["申請日"] == r["申請日"])
-                    )
-                    if not key_mask.any():
-                        conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 対象レコードが見つかりません')
-                        continue
-
-                    cur_status = str(base.loc[key_mask, "ステータス"].iloc[0])
-
-                    if approve:
-                        if cur_status != "申請済":
-                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため承認できません')
-                            continue
-                        action = "承認"; reason = ""
-                    elif reject:
-                        if cur_status != "申請済":
-                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため却下できません')
-                            continue
-                        reason = str(r.get("却下理由(入力)", "")).strip()
-                        if not reason:
-                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 却下理由が未入力')
-                            continue
-                        action = "却下"
-                    elif unapprove:
-                        if cur_status != "承認":
-                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため承認解除できません')
-                            continue
-                        action = "承認解除"; reason = ""
-                    else:  # delete_it
-                        if cur_status != "申請済":
-                            conflicts.append(f'{r["氏名"]} {r["休暇日"]}: 現在 {cur_status} のため削除できません')
-                            continue
-                        action = "削除"; reason = ""
-
-
-                    to_change.append({
-                        "社員ID": r["社員ID"],
-                        "氏名": r["氏名"],
-                        "休暇日": r["休暇日"],
-                        "申請日": r["申請日"],
-                        "action": action,
-                        "reason": reason,
-                        "old_status": cur_status,
-                    })
-
-                if not to_change and not conflicts:
-                    st.info("変更はありません。")
-                else:
-                    latest = read_holiday_csv()
-                    applied = 0
-                    audit_rows = []
-
-                    for ch in to_change:
-                        km = (
-                            (latest["社員ID"] == ch["社員ID"]) &
-                            (latest["休暇日"] == ch["休暇日"]) &
-                            (latest["申請日"] == ch["申請日"])
-                        )
-                        if not km.any():
-                            conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に削除/変更され見つかりません')
-                            continue
-
-                        cur2 = str(latest.loc[km, "ステータス"].iloc[0])
-
-                        # 再検証（直前の状態が想定どおりか）
-                        if ch["action"] in ("承認", "却下"):
-                            if cur2 != "申請済":
-                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ')
-                                continue
-                        elif ch["action"] == "承認解除":
-                            if cur2 != "承認":
-                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ')
-                                continue
-
-                        # 反映
-                        if ch["action"] == "承認":
-                            latest.loc[km, "ステータス"] = "承認"
-                            latest.loc[km, "承認者"]   = approver
-                            latest.loc[km, "承認日時"] = when_ts
-                            latest.loc[km, "却下理由"] = ""
-                            new_status_for_audit = "承認"
-                        elif ch["action"] == "却下":
-                            latest.loc[km, "ステータス"] = "却下"
-                            latest.loc[km, "承認者"]   = approver
-                            latest.loc[km, "承認日時"] = when_ts
-                            latest.loc[km, "却下理由"] = ch["reason"]
-                            new_status_for_audit = "却下"
-                        elif ch["action"] == "承認解除":
-                            if cur2 != "承認":
-                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ（承認解除できません）')
-                                continue
-                            latest.loc[km, "ステータス"] = "申請済"
-                            latest.loc[km, "承認者"] = ""
-                            latest.loc[km, "承認日時"] = ""
-                            latest.loc[km, "却下理由"] = ""
-                            new_status_for_audit = "申請済"
-
-                        elif ch["action"] == "削除":
-                            if cur2 != "申請済":
-                                conflicts.append(f'{ch["氏名"]} {ch["休暇日"]}: 直前に {cur2} に更新されスキップ（削除は申請済のみ）')
-                                continue
-                            latest = latest.loc[~km].copy()
-                            new_status_for_audit = "申請削除"
-
-                        applied += int(km.sum())
-
-                        # 監査ログ
-                        audit_rows.append({
-                            "timestamp": when_ts,
-                            "承認者": approver,
-                            "社員ID": ch["社員ID"],
-                            "氏名": ch["氏名"],
-                            "休暇日": ch["休暇日"],
-                            "申請日": ch["申請日"],
-                            "旧ステータス": ch["old_status"],
-                            "新ステータス": new_status_for_audit,
-                            "却下理由": ch["reason"],
-                        })
-
-                    if applied > 0:
-                        write_holiday_csv(latest)
-                        append_audit_log(audit_rows)
-                        st.success(f"{applied} 件を更新しました。")
-
-                    if conflicts:
-                        st.warning("一部の行は適用できませんでした：\n- " + "\n- ".join(conflicts))
-
-                    if applied > 0:
-                        time.sleep(1.0)
-                        st.rerun()
-
-    # ==============================
-    # 管理者：監査ログ閲覧（承認/却下の履歴）
-    # ==============================
-    with st.expander("📝 監査ログ（承認/却下の履歴）", expanded=False):
-        # 読み込み（無ければ空表示）
-        if os.path.exists(AUDIT_LOG_CSV):
-            try:
-                log_df = pd.read_csv(AUDIT_LOG_CSV, dtype=str, encoding="utf-8-sig").fillna("")
-            except UnicodeDecodeError:
-                log_df = pd.read_csv(AUDIT_LOG_CSV, dtype=str, encoding="cp932", encoding_errors="replace").fillna("")
-        else:
-            log_df = pd.DataFrame(columns=AUDIT_COLUMNS)
-
-        if log_df.empty:
-            st.caption("監査ログはまだありません。")
-        else:
-            # 期間プリセット（画面の締め期間に合わせて初期表示）
-            start_s = start_date.strftime("%Y-%m-%d")
-            end_s   = end_date.strftime("%Y-%m-%d")
-
-            col1, col2, col3 = st.columns([1.4, 1.4, 2])
-            with col1:
-                date_from = st.text_input("開始日 (YYYY-MM-DD)", value=start_s)
-            with col2:
-                date_to   = st.text_input("終了日 (YYYY-MM-DD)", value=end_s)
-            with col3:
-                approver = st.text_input("承認者で絞り込み（任意）", value="")
-
-            # フィルタリング
-            dfv = log_df.copy()
-            # 文字列比較のため範囲フィルタ
-            if date_from:
-                dfv = dfv[dfv["timestamp"].str[:10] >= date_from]
-            if date_to:
-                dfv = dfv[dfv["timestamp"].str[:10] <= date_to]
-            if approver.strip():
-                dfv = dfv[dfv["承認者"].str.contains(approver.strip(), na=False)]
-
-            # 表示整形
-            show = dfv[["timestamp","承認者","社員ID","氏名","休暇日","申請日","旧ステータス","新ステータス","却下理由"]].copy()
-            show = show.sort_values(["timestamp"], ascending=False)
-
-            st.dataframe(show, hide_index=True, use_container_width=True)
-
-            # ダウンロード
-            xls_buf = io.BytesIO()
-            with pd.ExcelWriter(xls_buf, engine="openpyxl") as writer:
-                show.to_excel(writer, index=False, sheet_name="監査ログ")
-            st.download_button(
-                "⬇️ 監査ログをExcelでダウンロード",
-                data=xls_buf.getvalue(),
-                file_name=f"監査ログ_{start_s}_to_{end_s}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-    # ==============================
-    # 管理者：バックアップ/復元
-    # ==============================
-    with st.expander("💾 バックアップ（ZIP）／🛠️ 復元（ZIP/CSV）", expanded=False):
-        st.markdown("**推奨運用**：業務終了時に必ずZIPでバックアップ → ローカルPCに保管。")
-
-        # --- バックアップ（ZIPダウンロード） ---
-        col_b1, col_b2 = st.columns([1.2, 2])
-        with col_b1:
-            # ZIPバッファを毎回生成
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for path, cols, fname in BACKUP_TABLES:
-                    dfb = _read_existing_or_empty(path, cols)
-                    content = dfb[cols].to_csv(index=False)      # ← ここは文字列
-                    zf.writestr(fname, content.encode("cp932", errors="replace"))  # ← ここでcp932にエンコードして格納
-
-            # ダウンロードボタン（押した瞬間にDL開始）
-            st.download_button(
-                "⬇️ 全CSVをZIPでダウンロード",
-                data=buf.getvalue(),
-                file_name=f"backup_{datetime.now():%Y%m%d_%H%M%S}.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
-
-        with col_b2:
-            st.caption("内容：attendance_log.csv / holiday_requests.csv / holiday_audit_log.csv / 社員ログイン情報.csv")
-
-        st.markdown("---")
-
-        # --- 復元（ZIPまたは個別CSVアップロード） ---
-        st.markdown("#### 復元（ZIP/CSVをアップロードして置換）")
-        uploads = st.file_uploader(
-            "ZIP（4ファイルまとめ）または個別CSVを1つ以上アップロード",
-            type=["zip", "csv"], accept_multiple_files=True
-        )
-
-        c1, c2 = st.columns([1.2, 2])
-        with c1:
-            do_backup = st.checkbox("上書き前に既存をZIPバックアップする", value=True)
-        with c2:
-            st.caption("※ 必須列が欠けたCSVはスキップされます。ZIPは上の4ファイル名で構成されている想定です。")
-
-        if st.button("インポートを実行", type="primary", disabled=(not uploads)):
-            # 1) 既存をバックアップ（任意）
-            if do_backup:
-                try:
-                    buf = io.BytesIO()
-                    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                        for path, cols, fname in BACKUP_TABLES:
-                            dfb = _read_existing_or_empty(path, cols)
-                            content = dfb[cols].to_csv(index=False)      # ← ここは文字列
-                            zf.writestr(fname, content.encode("cp932"))  # ← ここでcp932にエンコードして格納
-
-                    backup_dir = os.path.join(DATA_DIR, "backups")
-                    os.makedirs(backup_dir, exist_ok=True)
-                    backup_path = os.path.join(backup_dir, f"pre_import_{datetime.now():%Y%m%d_%H%M%S}.zip")
-                    with open(backup_path, "wb") as f:
-                        f.write(buf.getvalue())
-                    st.info(f"既存データをバックアップしました：{backup_path}")
-                except Exception as e:
-                    st.warning(f"バックアップで警告：{e}")
-
-            # 2) アップロード内容を展開
-            incoming: dict[str, bytes] = {}
-            for up in uploads:
-                name = (up.name or "").split("/")[-1]
-                if name.lower().endswith(".zip"):
-                    try:
-                        with zipfile.ZipFile(up) as zf:
-                            for n in zf.namelist():
-                                if n.lower().endswith(".csv"):
-                                    b = zf.read(n)
-                                    incoming[n.split("/")[-1]] = b
-                    except Exception as e:
-                        st.error(f"ZIPの解凍に失敗：{name} / {e}")
-                else:
-                    incoming[name] = up.read()
-
-            # 3) マッチング＆検証→書き込み
-            applied, skipped, errors = [], [], []
-            for path, cols, fname in BACKUP_TABLES:
-                if fname not in incoming:
-                    skipped.append(f"{fname}（未アップロード）")
-                    continue
-                try:
-                    df_imp = _read_csv_bytes(incoming[fname])
-                    missing = [c for c in cols if c not in df_imp.columns]
-                    if missing:
-                        errors.append(f"{fname}: 必須列が不足 {missing}")
-                        continue
-                    # 列順を揃えて上書き（アトミック書き込み）
-                    _write_atomic_csv(df_imp[cols], path, cols)
-                    applied.append(fname)
-                except Exception as e:
-                    errors.append(f"{fname}: 取込エラー {e}")
-
-            # 4) 結果表示
-            if applied:
-                st.success("置換したファイル：" + " / ".join(applied))
-            if skipped:
-                st.info("スキップ：" + " / ".join(skipped))
-            if errors:
-                st.error("エラー：" + " / ".join(errors))
-
-            if applied:
-                time.sleep(1.2)
-                st.rerun()
-
-    # ==============================
-    # 管理者：データ初期化（ヘッダーのみ残す）
-    # ==============================
-    with st.expander("🧯 データ初期化（ヘッダーのみ残す）", expanded=False):
-        st.warning("⚠️ 取り消しできません。実行前に必ず『バックアップ』を取得してください。")
-        tgt_att   = st.checkbox("勤怠データ（attendance_log.csv）を初期化", value=False)
-        tgt_hreq  = st.checkbox("休日申請（holiday_requests.csv）を初期化", value=False)
-        tgt_audit = st.checkbox("監査ログ（holiday_audit_log.csv）を初期化", value=False)
-        tgt_login = st.checkbox("社員ログイン情報（社員ログイン情報.csv）も初期化（通常はOFF推奨）", value=False)
-
-        confirm_text = st.text_input("確認のため 'DELETE' と入力してください", value="")
-        do_init = st.button("🧨 初期化を実行", type="primary", disabled=(confirm_text.strip().upper() != "DELETE"))
-
-        if do_init:
-            # 念のための事前バックアップを強く推奨
-            try:
+            col_b1, col_b2 = st.columns([1.2, 2])
+            with col_b1:
                 buf = io.BytesIO()
                 with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                     for path, cols, fname in BACKUP_TABLES:
                         dfb = _read_existing_or_empty(path, cols)
                         content = dfb[cols].to_csv(index=False)
-                        zf.writestr(fname, content.encode("cp932"))
-                backup_dir = os.path.join(DATA_DIR, "backups")
-                os.makedirs(backup_dir, exist_ok=True)
-                backup_path = os.path.join(backup_dir, f"pre_wipe_{datetime.now():%Y%m%d_%H%M%S}.zip")
-                with open(backup_path, "wb") as f:
-                    f.write(buf.getvalue())
-                st.info(f"既存データのバックアップを保存しました：{backup_path}")
-            except Exception as e:
-                st.warning(f"バックアップで警告：{e}")
+                        zf.writestr(fname, content.encode("cp932", errors="replace"))
+                st.download_button(
+                    "⬇️ 全CSVをZIPでダウンロード",
+                    data=buf.getvalue(),
+                    file_name=f"backup_{datetime.now():%Y%m%d_%H%M%S}.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
+            with col_b2:
+                st.caption("内容：attendance_log.csv / holiday_requests.csv / holiday_audit_log.csv / 社員ログイン情報.csv")
 
-            # 初期化ターゲットに応じて空データを書き戻す
-            done = []
-            if tgt_att:
-                empty = pd.DataFrame(columns=ATT_COLUMNS)
-                _write_atomic_csv(empty, CSV_PATH, ATT_COLUMNS)
-                done.append("attendance_log.csv")
-            if tgt_hreq:
-                empty = pd.DataFrame(columns=HOLIDAY_COLUMNS)
-                _write_atomic_csv(empty, HOLIDAY_CSV, HOLIDAY_COLUMNS)
-                done.append("holiday_requests.csv")
-            if tgt_audit:
-                empty = pd.DataFrame(columns=AUDIT_COLUMNS)
-                _write_atomic_csv(empty, AUDIT_LOG_CSV, AUDIT_COLUMNS)
-                done.append("holiday_audit_log.csv")
-            if tgt_login:
-                empty = pd.DataFrame(columns=LOGIN_COLUMNS)
-                _write_atomic_csv(empty, LOGIN_CSV, LOGIN_COLUMNS)
-                done.append("社員ログイン情報.csv")
+            st.markdown("---")
 
-            if done:
-                st.success("初期化完了：" + " / ".join(done))
-                time.sleep(1.2)
-                st.rerun()
-            else:
-                st.info("初期化対象が選択されていません。")
+            uploads = st.file_uploader(
+                "ZIP（4ファイルまとめ）または個別CSVを1つ以上アップロード",
+                type=["zip", "csv"], accept_multiple_files=True
+            )
+            c1, c2 = st.columns([1.2, 2])
+            with c1:
+                do_backup = st.checkbox("上書き前に既存をZIPバックアップする", value=True)
+            with c2:
+                st.caption("※ 必須列が欠けたCSVはスキップされます。ZIPは上の4ファイル名で構成されている想定です。")
 
-    # 管理者分岐の最後に stop（社員UIに進ませない）
+            if st.button("インポートを実行", type="primary", disabled=(not uploads)):
+                if do_backup:
+                    try:
+                        buf = io.BytesIO()
+                        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                            for path, cols, fname in BACKUP_TABLES:
+                                dfb = _read_existing_or_empty(path, cols)
+                                content = dfb[cols].to_csv(index=False)
+                                zf.writestr(fname, content.encode("cp932"))
+                        backup_dir = os.path.join(DATA_DIR, "backups")
+                        os.makedirs(backup_dir, exist_ok=True)
+                        backup_path = os.path.join(backup_dir, f"pre_import_{datetime.now():%Y%m%d_%H%M%S}.zip")
+                        with open(backup_path, "wb") as f:
+                            f.write(buf.getvalue())
+                        st.info(f"既存データをバックアップしました：{backup_path}")
+                    except Exception as e:
+                        st.warning(f"バックアップで警告：{e}")
+
+                incoming: dict[str, bytes] = {}
+                for up in uploads:
+                    name = (up.name or "").split("/")[-1]
+                    if name.lower().endswith(".zip"):
+                        try:
+                            with zipfile.ZipFile(up) as zf:
+                                for n in zf.namelist():
+                                    if n.lower().endswith(".csv"):
+                                        incoming[n.split("/")[-1]] = zf.read(n)
+                        except Exception as e:
+                            st.error(f"ZIPの解凍に失敗：{name} / {e}")
+                    else:
+                        incoming[name] = up.read()
+
+                applied, skipped, errors = [], [], []
+                for path, cols, fname in BACKUP_TABLES:
+                    if fname not in incoming:
+                        skipped.append(f"{fname}（未アップロード）")
+                        continue
+                    try:
+                        df_imp = _read_csv_bytes(incoming[fname])
+                        missing = [c for c in cols if c not in df_imp.columns]
+                        if missing:
+                            errors.append(f"{fname}: 必須列が不足 {missing}")
+                            continue
+                        _write_atomic_csv(df_imp[cols], path, cols)
+                        applied.append(fname)
+                    except Exception as e:
+                        errors.append(f"{fname}: 取込エラー {e}")
+
+                if applied: st.success("置換したファイル：" + " / ".join(applied))
+                if skipped: st.info("スキップ：" + " / ".join(skipped))
+                if errors:  st.error("エラー：" + " / ".join(errors))
+                if applied:
+                    time.sleep(1.2); st.rerun()
+
+        # データ初期化
+        with st.expander("🧯 データ初期化（ヘッダーのみ残す）", expanded=False):
+            st.warning("⚠️ 取り消しできません。実行前に必ず『バックアップ』を取得してください。")
+            tgt_att   = st.checkbox("勤怠データ（attendance_log.csv）を初期化", value=False)
+            tgt_hreq  = st.checkbox("休日申請（holiday_requests.csv）を初期化", value=False)
+            tgt_audit = st.checkbox("監査ログ（holiday_audit_log.csv）を初期化", value=False)
+            tgt_login = st.checkbox("社員ログイン情報（社員ログイン情報.csv）も初期化（通常はOFF推奨）", value=False)
+
+            confirm_text = st.text_input("確認のため 'DELETE' と入力してください", value="")
+            do_init = st.button("🧨 初期化を実行", type="primary", disabled=(confirm_text.strip().upper() != "DELETE"))
+
+            if do_init:
+                try:
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                        for path, cols, fname in BACKUP_TABLES:
+                            dfb = _read_existing_or_empty(path, cols)
+                            content = dfb[cols].to_csv(index=False)
+                            zf.writestr(fname, content.encode("cp932"))
+                    backup_dir = os.path.join(DATA_DIR, "backups")
+                    os.makedirs(backup_dir, exist_ok=True)
+                    backup_path = os.path.join(backup_dir, f"pre_wipe_{datetime.now():%Y%m%d_%H%M%S}.zip")
+                    with open(backup_path, "wb") as f:
+                        f.write(buf.getvalue())
+                    st.info(f"既存データのバックアップを保存しました：{backup_path}")
+                except Exception as e:
+                    st.warning(f"バックアップで警告：{e}")
+
+                done = []
+                if tgt_att:
+                    _write_atomic_csv(pd.DataFrame(columns=ATT_COLUMNS), CSV_PATH, ATT_COLUMNS); done.append("attendance_log.csv")
+                if tgt_hreq:
+                    _write_atomic_csv(pd.DataFrame(columns=HOLIDAY_COLUMNS), HOLIDAY_CSV, HOLIDAY_COLUMNS); done.append("holiday_requests.csv")
+                if tgt_audit:
+                    _write_atomic_csv(pd.DataFrame(columns=AUDIT_COLUMNS), AUDIT_LOG_CSV, AUDIT_COLUMNS); done.append("holiday_audit_log.csv")
+                if tgt_login:
+                    _write_atomic_csv(pd.DataFrame(columns=LOGIN_COLUMNS), LOGIN_CSV, LOGIN_COLUMNS); done.append("社員ログイン情報.csv")
+
+                if done:
+                    st.success("初期化完了：" + " / ".join(done))
+                    time.sleep(1.2); st.rerun()
+                else:
+                    st.info("初期化対象が選択されていません。")
+
+    # 社員UIへ進ませない
     st.stop()
 
 # ==============================
