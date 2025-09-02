@@ -691,10 +691,14 @@ if is_admin:
                 hide_index=True,
                 use_container_width=True
             )
-            total_ot = df_admin_user["残業時間"].sum()
-            total_ot = df_admin_user["承認残業時間"].sum() 
+
+            # 修正：合計の算出
+            total_ot_calc = float(df_admin_user["残業時間"].sum())
+            total_ot_approved = float(df_admin_user["承認残業時間"].sum())
+
             st.subheader(f"⏱️ 合計残業時間（自動計算）：{format_hours_minutes(total_ot_calc)}")
             st.subheader(f"✅ 合計残業時間（承認反映）：{format_hours_minutes(total_ot_approved)}")
+
 
         # ===== 修正 =====
         with st.expander(f"✏️ 出退勤の修正（{selected_user_name} さん）", expanded=False):
@@ -944,20 +948,20 @@ if is_admin:
         if status_filter_ot: m &= ot["ステータス"].isin(status_filter_ot)
         if dept_filter_ot:   m &= ot["部署"].isin(dept_filter_ot)
 
-        view = ot.loc[m, ["社員ID","氏名","部署","対象日","申請日時","申請残業H","申請理由","ステータス","承認者","承認日時","却下理由"]].copy()
-        view = view.sort_values(["ステータス","対象日","社員ID"])
+        ot_view = ot.loc[m, ["社員ID","氏名","部署","対象日","申請日時","申請残業H","申請理由","ステータス","承認者","承認日時","却下理由"]].copy()
+        ot_view = ot_view.sort_values(["ステータス","対象日","社員ID"])
 
-        if view.empty:
+        if ot_view.empty:
             st.caption("この条件に該当する申請はありません。")
         else:
-            view["承認"] = False
-            view["却下"] = False
-            view["承認解除"] = False
-            view["削除"] = False
-            view["却下理由(入力)"] = ""
+            ot_view["承認"] = False
+            ot_view["却下"] = False
+            ot_view["承認解除"] = False
+            ot_view["削除"] = False
+            ot_view["却下理由(入力)"] = ""
 
             edited = st.data_editor(
-                view, hide_index=True, use_container_width=True,
+                ot_view, hide_index=True, use_container_width=True,
                 column_config={
                     "社員ID": st.column_config.TextColumn("社員ID", disabled=True),
                     "氏名": st.column_config.TextColumn("氏名", disabled=True),
@@ -1512,14 +1516,14 @@ if is_admin:
 # 社員UI
 # ==============================
 # ▼ サイドバーの切替メニュー（これでページを切替）
-view = st.sidebar.radio(
+menu = st.sidebar.radio(
     "📑 表示メニュー",
-    ["出退勤入力", "月別履歴", "休日申請"],  # 必要に応じて他のページも足せます
+    ["出退勤入力", "月別履歴", "休日申請"],
     index=0,
     key="main_view_selector"
 )
 
-if view == "出退勤入力":
+if menu == "出退勤入力":
     st.header("📝 出退勤の入力")
 
     # === 入力可能な過去期間の設定（例：直近2ヶ月） ===
@@ -1927,10 +1931,10 @@ if view == "出退勤入力":
         if cand.empty:
             st.caption("取消できる『申請済』はありません。")
         else:
-            view = cand[["対象日","申請残業H","申請日時","申請理由"]].copy()
-            view["取消"] = False
+            ot_cancel_view = cand[["対象日","申請残業H","申請日時","申請理由"]].copy()
+            ot_cancel_view["取消"] = False
             edited = st.data_editor(
-                view, hide_index=True, use_container_width=True, key="ot_cancel_editor",
+                ot_cancel_view, hide_index=True, use_container_width=True, key="ot_cancel_editor",
                 column_config={
                     "対象日": st.column_config.TextColumn("対象日", disabled=True),
                     "申請残業H": st.column_config.TextColumn("申請残業H", disabled=True),
@@ -1970,7 +1974,7 @@ if view == "出退勤入力":
 # ==============================
 # 月別履歴（社員）
 # ==============================
-if view == "月別履歴":
+if menu == "月別履歴":
     st.header(f"📋 月別履歴（{start_date:%Y/%m/%d}～{end_date:%Y/%m/%d}）")
 
     df_self = df[
@@ -2010,7 +2014,7 @@ if view == "月別履歴":
 # ==============================
 # 休日・休暇申請
 # ==============================
-if view == "休日申請":
+if menu == "休日申請":
     st.header("📅 休日・休暇申請")
 
     # 申請フォーム（そのまま流用）
