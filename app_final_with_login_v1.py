@@ -664,25 +664,26 @@ if is_admin:
         with st.expander(f"📍 位置情報（{selected_user_name} さん）", expanded=False):
             if not gps_df.empty:
                 links_df = gps_df.copy()
-                # URL列を作成（テキストは後でLinkColumnで統一表示）
                 links_df["GoogleMap"] = links_df.apply(
                     lambda r: f"https://www.google.com/maps?q={r['緯度']},{r['経度']}"
-                    if (str(r.get("緯度","")).strip() and str(r.get("経度","")).strip())
-                    else "",
+                    if (str(r.get("緯度","")).strip() and str(r.get("経度","")).strip()) else "",
                     axis=1
                 )
                 links_df = links_df[["日付", "GoogleMap"]]
-                st.dataframe(
-                    links_df,
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "日付": st.column_config.TextColumn("日付"),
-                        "GoogleMap": st.column_config.LinkColumn("地図で見る", display_text="地図で見る")
-                    }
-                )
+                try:
+                    st.dataframe(
+                        links_df, hide_index=True, use_container_width=True,
+                        column_config={
+                            "日付": st.column_config.TextColumn("日付"),
+                            "GoogleMap": st.column_config.LinkColumn("地図で見る", display_text="地図で見る"),
+                        }
+                    )
+                except Exception:
+                    # Fallback: 文字列リンクをそのまま表示
+                    st.dataframe(links_df.rename(columns={"GoogleMap": "地図URL"}), hide_index=True, use_container_width=True)
             else:
                 st.caption("位置情報はありません。")
+
 
         with st.expander(f"📄 出退勤履歴（{selected_user_name} さん）", expanded=False):
             st.dataframe(
@@ -692,7 +693,8 @@ if is_admin:
             )
             total_ot = df_admin_user["残業時間"].sum()
             total_ot = df_admin_user["承認残業時間"].sum() 
-            st.subheader(f"⏱️ 合計残業時間：{format_hours_minutes(total_ot)}")
+            st.subheader(f"⏱️ 合計残業時間（自動計算）：{format_hours_minutes(total_ot_calc)}")
+            st.subheader(f"✅ 合計残業時間（承認反映）：{format_hours_minutes(total_ot_approved)}")
 
         # ===== 修正 =====
         with st.expander(f"✏️ 出退勤の修正（{selected_user_name} さん）", expanded=False):
@@ -715,18 +717,17 @@ if is_admin:
 
             if st.button("💾 修正内容を保存", type="primary", key="admin_save_edits"):
                 base = _read_csv_flexible(CSV_PATH).fillna("")
-                errors = []
+                errors = []; updated = False
                 for _, r in edited.iterrows():
                     d  = str(r["日付"])
                     sh = str(r["出勤時刻"]).strip()
                     eh = str(r["退勤時刻"]).strip()
-
                     row_errs = []
                     if sh and not _is_hhmm(sh): row_errs.append(f"{d} の出勤時刻が不正: {sh}")
                     if eh and not _is_hhmm(eh): row_errs.append(f"{d} の退勤時刻が不正: {eh}")
                     if row_errs:
                         errors.extend(row_errs)
-                        continue  # ← この行だけスキップ。以降の正常行は続行
+                        continue  # ← エラー行だけ飛ばす
 
                     m = (base["社員ID"] == selected_user_id) & (base["日付"] == d)
                     if not m.any():
@@ -735,16 +736,16 @@ if is_admin:
                             "日付": d, "出勤時刻": sh, "退勤時刻": eh,
                         }])], ignore_index=True)
                     else:
-                        if sh: base.loc[m, "出勤時刻"] = sh
-                        if eh: base.loc[m, "退勤時刻"] = eh
+                        if sh != "": base.loc[m, "出勤時刻"] = sh
+                        if eh != "": base.loc[m, "退勤時刻"] = eh
+                    updated = True
 
+                if updated and safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
+                    st.success("正常な行は保存しました。最新表示に更新します。")
+                    time.sleep(1.0)
+                    st.rerun()
                 if errors:
-                    st.error("／".join(errors))
-                else:
-                    if safe_write_csv(base, CSV_PATH, ATT_COLUMNS):
-                        st.success("修正を保存しました。最新表示に更新します。")
-                        time.sleep(1.0)
-                        st.rerun()
+                    st.warning("以下の行は保存できませんでした：\n- " + "\n- ".join(errors))
 
         # ===== 削除 =====
         with st.expander(f"🗑️ 出退勤の削除（{selected_user_name} さん）", expanded=False):
@@ -1523,246 +1524,448 @@ if view == "出退勤入力":
 
     # === 入力可能な過去期間の設定（例：直近2ヶ月） ===
     PAST_MONTHS = 2
-
     today = today_jst()
     try:
-        # dateutil があれば月単位で厳密に
         from dateutil.relativedelta import relativedelta
         past_limit_date = today - relativedelta(months=PAST_MONTHS)
     except Exception:
-        # 無ければだいたいの日数で代替（31日×ヶ月）
         past_limit_date = today - timedelta(days=31*PAST_MONTHS)
 
-    # 社員UI：日付入力（前月ロックのUX強化）
-    punch_type = st.radio("打刻種類を選択", ["出勤", "退勤"], horizontal=True)
-    selected_date = st.date_input(
-        "日付",
-        value=today,
-        min_value=past_limit_date,     # ← 直近◯ヶ月まで遡れる
-        max_value=today                # ← 未来は不可
-    )
+    # ここからタブ
+    tab_punch, tab_edit, tab_ot = st.tabs(["📝 打刻入力", "✏️ 修正／削除", "⏱️ 残業申請"])
 
-    # ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
-    holiday_df_all = read_holiday_csv()
-    sel_date_str = selected_date.strftime("%Y-%m-%d")
-    is_approved_holiday = bool((
-        (holiday_df_all["社員ID"] == st.session_state.user_id) &
-        (holiday_df_all["休暇日"] == sel_date_str) &
-        (holiday_df_all["ステータス"] == "承認")
-    ).any())
+    with tab_punch:
+        # 社員UI：日付入力（前月ロックのUX強化）
+        punch_type = st.radio("打刻種類を選択", ["出勤", "退勤"], horizontal=True)
+        selected_date = st.date_input(
+            "日付",
+            value=today,
+            min_value=past_limit_date,     # ← 直近◯ヶ月まで遡れる
+            max_value=today                # ← 未来は不可
+        )
 
-    # ========= 背景GPS取得（UI＋非表示JS）=========
+        # ---- 打刻抑止：承認済み休日なら保存ボタンを無効化 ----
+        holiday_df_all = read_holiday_csv()
+        sel_date_str = selected_date.strftime("%Y-%m-%d")
+        is_approved_holiday = bool((
+            (holiday_df_all["社員ID"] == st.session_state.user_id) &
+            (holiday_df_all["休暇日"] == sel_date_str) &
+            (holiday_df_all["ステータス"] == "承認")
+        ).any())
 
-    # セッション初期化
-    if "manual_gps" not in st.session_state:
-        st.session_state.manual_gps = ""   # "lat,lng"
-    if "gps_error" not in st.session_state:
-        st.session_state.gps_error = ""
-    if "gps_click_token" not in st.session_state:
-        st.session_state.gps_click_token = 0.0  # ボタン押下トリガ
+        # ========= 背景GPS取得（UI＋非表示JS）=========
 
-    # ===== ここから “ギャップを詰めたい範囲” を本物の親で囲む =====
-    with st.container():
-        col_g1, col_g2 = st.columns([1, 3])
-        with col_g1:
-            # 押下でトークン更新→即 rerun（JS が新トークンを拾ってポップアップ起動）
-            if st.button("位置情報を取得する"):
-                st.session_state.gps_error = ""
-                st.session_state.manual_gps = ""
-                st.session_state.gps_click_token = time.time()
-                st.rerun()
+        # セッション初期化
+        if "manual_gps" not in st.session_state:
+            st.session_state.manual_gps = ""   # "lat,lng"
+        if "gps_error" not in st.session_state:
+            st.session_state.gps_error = ""
+        if "gps_click_token" not in st.session_state:
+            st.session_state.gps_click_token = 0.0  # ボタン押下トリガ
 
-            # ← ここに保存ボタンを移動
-            save_clicked = st.button("保存", key="save_btn_top", disabled=is_approved_holiday)
-
-        with col_g2:
-            # 現状表示
-            if st.session_state.manual_gps:
-                st.success(f"取得済み: {st.session_state.manual_gps}")
-            elif st.session_state.gps_error:
-                st.warning("取得失敗: " + st.session_state.gps_error)
-            else:
-                st.caption("未取得です（位置情報を取得してください）")
-
-        # ---- geolocation 実行用（keyは渡さない）----
-        TOKEN_VAL = float(st.session_state.get("gps_click_token", 0) or 0)
-
-        # ★ トークンが有効な時だけコンポーネントを描画する
-        if TOKEN_VAL > 0:
-            st.markdown('<div class="g-cmark"></div>', unsafe_allow_html=True)
-            gps_val = components.html(
-                """
-                <div id="gps-hook" style="display:none"></div>
-                <script>
-                (function(){
-                  const TOKEN = "__TOKEN__";
-                  if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
-
-                  function redirectWith(param, value){
-                    try {
-                      const topWin = window.top;
-                      const url = new URL(topWin.location.href);
-                      url.searchParams.set(param, value);
-                      topWin.location.href = url.toString();
-                    } catch (e) {}
-                  }
-                  let w = window.open("", "_blank", "width=360,height=280");
-                  if (!w) { redirectWith("gps_error","POPUP_BLOCKED"); return; }
-
-                  w.document.write(`<!doctype html><html><head>
-                    <meta name="viewport" content="width=device-width,initial-scale=1"/>
-                    <title>位置情報の取得</title>
-                  </head>
-                  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
-                    <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
-                    <div id="s" style="white-space:pre-wrap"></div>
-                    <script>
-                      (function(){
-                        const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
-                        function back(param, value){
-                          try{
-                            const topWin = window.opener ? window.opener.top : null;
-                            if (topWin){
-                              const url = new URL(topWin.location.href);
-                              url.searchParams.set(param, value);
-                              topWin.location.href = url.toString();
-                            }
-                          }catch(e){}
-                          setTimeout(()=>window.close(), 300);
-                        }
-
-                        if (!('geolocation' in navigator)) { say("この端末/ブラウザでは位置情報が使えません。"); back("gps_error","GEO_UNSUPPORTED"); return; }
-
-                        navigator.geolocation.getCurrentPosition(function(pos){
-                          const v = pos.coords.latitude + "," + pos.coords.longitude;
-                          say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
-                          back("gps", v);
-                        }, function(err){
-                          const msg = (err && err.message) ? err.message : "GEO_ERROR";
-                          say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
-                          back("gps_error", msg);
-                        }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
-                      })();
-                    <\/script>
-                  </body></html>`);
-                })();
-                </script>
-                """.replace("__TOKEN__", str(TOKEN_VAL)),
-                height=0
-            )
-
-            # 値の受け取り（同じ）
-            if isinstance(gps_val, str) and gps_val:
-                if gps_val.startswith("ERROR:"):
-                    st.session_state.gps_error = gps_val.replace("ERROR:", "")
-                    st.session_state.manual_gps = ""
-                else:
-                    st.session_state.manual_gps = gps_val
+        # ===== ここから “ギャップを詰めたい範囲” を本物の親で囲む =====
+        with st.container():
+            col_g1, col_g2 = st.columns([1, 3])
+            with col_g1:
+                # 押下でトークン更新→即 rerun（JS が新トークンを拾ってポップアップ起動）
+                if st.button("位置情報を取得する"):
                     st.session_state.gps_error = ""
-                st.session_state.gps_click_token = 0
+                    st.session_state.manual_gps = ""
+                    st.session_state.gps_click_token = time.time()
+                    st.rerun()
+
+                # ← ここに保存ボタンを移動
+                save_clicked = st.button("保存", key="save_btn_top", disabled=is_approved_holiday)
+
+            with col_g2:
+                # 現状表示
+                if st.session_state.manual_gps:
+                    st.success(f"取得済み: {st.session_state.manual_gps}")
+                elif st.session_state.gps_error:
+                    st.warning("取得失敗: " + st.session_state.gps_error)
+                else:
+                    st.caption("未取得です（位置情報を取得してください）")
+
+            # ---- geolocation 実行用（keyは渡さない）----
+            TOKEN_VAL = float(st.session_state.get("gps_click_token", 0) or 0)
+
+            # ★ トークンが有効な時だけコンポーネントを描画する
+            if TOKEN_VAL > 0:
+                st.markdown('<div class="g-cmark"></div>', unsafe_allow_html=True)
+                gps_val = components.html(
+                    """
+                    <div id="gps-hook" style="display:none"></div>
+                    <script>
+                    (function(){
+                      const TOKEN = "__TOKEN__";
+                      if (!TOKEN || TOKEN === "0" || TOKEN === "0.0") return;
+
+                      function redirectWith(param, value){
+                        try {
+                          const topWin = window.top;
+                          const url = new URL(topWin.location.href);
+                          url.searchParams.set(param, value);
+                          topWin.location.href = url.toString();
+                        } catch (e) {}
+                      }
+                      let w = window.open("", "_blank", "width=360,height=280");
+                      if (!w) { redirectWith("gps_error","POPUP_BLOCKED"); return; }
+
+                      w.document.write(`<!doctype html><html><head>
+                        <meta name="viewport" content="width=device-width,initial-scale=1"/>
+                        <title>位置情報の取得</title>
+                      </head>
+                      <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:1rem">
+                        <div style="margin-bottom:0.75rem;">位置情報を取得しています…<br>ブラウザの許可ダイアログを確認してください。</div>
+                        <div id="s" style="white-space:pre-wrap"></div>
+                        <script>
+                          (function(){
+                            const say = (t) => { try { document.getElementById('s').textContent = t; } catch (_) {} };
+                            function back(param, value){
+                              try{
+                                const topWin = window.opener ? window.opener.top : null;
+                                if (topWin){
+                                  const url = new URL(topWin.location.href);
+                                  url.searchParams.set(param, value);
+                                  topWin.location.href = url.toString();
+                                }
+                              }catch(e){}
+                              setTimeout(()=>window.close(), 300);
+                            }
+
+                            if (!('geolocation' in navigator)) { say("この端末/ブラウザでは位置情報が使えません。"); back("gps_error","GEO_UNSUPPORTED"); return; }
+
+                            navigator.geolocation.getCurrentPosition(function(pos){
+                              const v = pos.coords.latitude + "," + pos.coords.longitude;
+                              say("取得成功: " + v + "（このウィンドウは自動で閉じます）");
+                              back("gps", v);
+                            }, function(err){
+                              const msg = (err && err.message) ? err.message : "GEO_ERROR";
+                              say("取得失敗: " + msg + "（このウィンドウは自動で閉じます）");
+                              back("gps_error", msg);
+                            }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
+                          })();
+                        <\/script>
+                      </body></html>`);
+                    })();
+                    </script>
+                    """.replace("__TOKEN__", str(TOKEN_VAL)),
+                    height=0
+                )
+
+                # 値の受け取り（同じ）
+                if isinstance(gps_val, str) and gps_val:
+                    if gps_val.startswith("ERROR:"):
+                        st.session_state.gps_error = gps_val.replace("ERROR:", "")
+                        st.session_state.manual_gps = ""
+                    else:
+                        st.session_state.manual_gps = gps_val
+                        st.session_state.gps_error = ""
+                    st.session_state.gps_click_token = 0
+                    st.rerun()
+            # else: TOKENが0の時は何も描画しない（＝空白が一切できない）
+
+
+            # Python側で使う値（保存処理で使用）
+            effective_gps = st.session_state.get("manual_gps", "")
+            lat, lng = "", ""
+            if isinstance(effective_gps, str) and "," in effective_gps:
+                lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
+
+            # ========= 背景GPS取得ここまで =========
+
+            # …（gps_val の処理、lat/lng の算出の直後あたりに）
+            if save_clicked:
+                if punch_type == "出勤" and not (lat and lng):
+                    err = st.session_state.get("gps_error", "")
+                    st.warning("位置情報が未取得のため、位置情報なしで保存します。"
+                               + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
+
+                st.session_state.pending_save = True
+                st.session_state.punch_action = {
+                    "type": punch_type,
+                    "date": selected_date.strftime("%Y-%m-%d"),
+                }
                 st.rerun()
-        # else: TOKENが0の時は何も描画しない（＝空白が一切できない）
 
+            # ---- 前月ロック判定 ----
+            if selected_date < past_limit_date or selected_date > today:
+                st.error(f"この日は入力範囲外です。{past_limit_date:%Y-%m-%d} 〜 {today:%Y-%m-%d} の間で選択してください。")
+            else:
+                # （任意）承認済み休日なら事前に注意を表示
+                if is_approved_holiday:
+                    st.warning("この日は承認済みです。打刻する場合は、管理者にご相談ください。")
 
-        # Python側で使う値（保存処理で使用）
-        effective_gps = st.session_state.get("manual_gps", "")
-        lat, lng = "", ""
-        if isinstance(effective_gps, str) and "," in effective_gps:
-            lat, lng = [s.strip() for s in effective_gps.split(",", 1)]
+                # ===== 保存フェーズ（pending_save が True のときに実行） =====
+                if st.session_state.get("pending_save"):
+                    # 今ランでは位置情報取得は起動しない（任意のため）
+                    action = st.session_state.get("punch_action", {})
+                    action_type = action.get("type", punch_type)  # 念のためフォールバック
+                    action_date = action.get("date", selected_date.strftime("%Y-%m-%d"))
+                    now_hm = datetime.now(JST).strftime("%H:%M")
 
-        # ========= 背景GPS取得ここまで =========
-
-        # …（gps_val の処理、lat/lng の算出の直後あたりに）
-        if save_clicked:
-            if punch_type == "出勤" and not (lat and lng):
-                err = st.session_state.get("gps_error", "")
-                st.warning("位置情報が未取得のため、位置情報なしで保存します。"
-                           + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
-
-            st.session_state.pending_save = True
-            st.session_state.punch_action = {
-                "type": punch_type,
-                "date": selected_date.strftime("%Y-%m-%d"),
-            }
-            st.rerun()
-
-        # ---- 前月ロック判定 ----
-        if selected_date < past_limit_date or selected_date > today:
-            st.error(f"この日は入力範囲外です。{past_limit_date:%Y-%m-%d} 〜 {today:%Y-%m-%d} の間で選択してください。")
-        else:
-            # （任意）承認済み休日なら事前に注意を表示
-            if is_approved_holiday:
-                st.warning("この日は承認済みです。打刻する場合は、管理者にご相談ください。")
-
-            # ===== 保存フェーズ（pending_save が True のときに実行） =====
-            if st.session_state.get("pending_save"):
-                # 今ランでは位置情報取得は起動しない（任意のため）
-                action = st.session_state.get("punch_action", {})
-                action_type = action.get("type", punch_type)  # 念のためフォールバック
-                action_date = action.get("date", selected_date.strftime("%Y-%m-%d"))
-                now_hm = datetime.now(JST).strftime("%H:%M")
-
-                # 承認済み休日は保存禁止（仕様）
-                _hd = read_holiday_csv()
-                if ((_hd["社員ID"] == st.session_state.user_id) &
-                    (_hd["休暇日"] == action_date) &
-                    (_hd["ステータス"] == "承認")).any():
-                    st.session_state.pending_save = False
-                    st.error("この日は承認済みの休日です。打刻はできません。")
-                    st.stop()
-
-                # 保存本体（出勤/退勤 共通）
-                df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) else pd.DataFrame(columns=ATT_COLUMNS)
-                for col in ATT_COLUMNS:
-                    if col not in df_att.columns:
-                        df_att[col] = ""
-
-                m = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == action_date)
-
-                if action_type == "出勤":
-                    # 位置情報が無い場合は警告だけ出して保存続行
-                    if not (lat and lng):
-                        err = st.session_state.get("gps_error", "")
-                        st.warning("位置情報が未取得のため、位置情報なしで保存します。"
-                                   + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
-                    if m.any():
-                        df_att.loc[m, ["出勤時刻", "緯度", "経度"]] = [now_hm, (lat or ""), (lng or "")]
-                    else:
-                        df_att = pd.concat([df_att, pd.DataFrame([{
-                            "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
-                            "日付": action_date, "出勤時刻": now_hm, "退勤時刻": "",
-                            "緯度": (lat or ""), "経度": (lng or "")
-                        }])], ignore_index=True)
-
-                    if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
-                        removed = auto_cancel_holiday_by_attendance(st.session_state.user_id, st.session_state.user_name, action_date)
-                        if removed > 0:
-                            st.info(f"この日の休暇申請（{removed}件）を自動取消しました。")
+                    # 承認済み休日は保存禁止（仕様）
+                    _hd = read_holiday_csv()
+                    if ((_hd["社員ID"] == st.session_state.user_id) &
+                        (_hd["休暇日"] == action_date) &
+                        (_hd["ステータス"] == "承認")).any():
                         st.session_state.pending_save = False
-                        st.success(f"✅ 出勤 を {now_hm} で保存しました。")
-                        time.sleep(1.2)
-                        st.rerun()
+                        st.error("この日は承認済みの休日です。打刻はできません。")
+                        st.stop()
 
-                else:  # 退勤
-                    if m.any():
-                        # 座標があれば一緒に更新、無ければ退勤時刻のみ
-                        if lat and lng:
-                            df_att.loc[m, ["退勤時刻", "緯度", "経度"]] = [now_hm, lat, lng]
+                    # 保存本体（出勤/退勤 共通）
+                    df_att = _read_csv_flexible(CSV_PATH) if os.path.exists(CSV_PATH) else pd.DataFrame(columns=ATT_COLUMNS)
+                    for col in ATT_COLUMNS:
+                        if col not in df_att.columns:
+                            df_att[col] = ""
+
+                    m = (df_att["社員ID"] == st.session_state.user_id) & (df_att["日付"] == action_date)
+
+                    if action_type == "出勤":
+                        # 位置情報が無い場合は警告だけ出して保存続行
+                        if not (lat and lng):
+                            err = st.session_state.get("gps_error", "")
+                            st.warning("位置情報が未取得のため、位置情報なしで保存します。"
+                                       + (f"（原因: {err.replace('ERROR:','')}）" if err else ""))
+                        if m.any():
+                            df_att.loc[m, ["出勤時刻", "緯度", "経度"]] = [now_hm, (lat or ""), (lng or "")]
                         else:
-                            df_att.loc[m, "退勤時刻"] = now_hm
-                    else:
-                        # 新規行（退勤先行）。座標があれば入れる
-                        df_att = pd.concat([df_att, pd.DataFrame([{
-                            "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
-                            "日付": action_date, "出勤時刻": "", "退勤時刻": now_hm,
-                            "緯度": (lat if (lat and lng) else ""), "経度": (lng if (lat and lng) else "")
-                        }])], ignore_index=True)
+                            df_att = pd.concat([df_att, pd.DataFrame([{
+                                "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                                "日付": action_date, "出勤時刻": now_hm, "退勤時刻": "",
+                                "緯度": (lat or ""), "経度": (lng or "")
+                            }])], ignore_index=True)
 
-                    if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
-                        st.session_state.pending_save = False
-                        st.success(f"✅ 退勤 を {now_hm} で保存しました。")
-                        time.sleep(1.2)
-                        st.rerun()
+                        if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
+                            removed = auto_cancel_holiday_by_attendance(st.session_state.user_id, st.session_state.user_name, action_date)
+                            if removed > 0:
+                                st.info(f"この日の休暇申請（{removed}件）を自動取消しました。")
+                            st.session_state.pending_save = False
+                            st.success(f"✅ 出勤 を {now_hm} で保存しました。")
+                            time.sleep(1.2)
+                            st.rerun()
+
+                    else:  # 退勤
+                        if m.any():
+                            # 座標があれば一緒に更新、無ければ退勤時刻のみ
+                            if lat and lng:
+                                df_att.loc[m, ["退勤時刻", "緯度", "経度"]] = [now_hm, lat, lng]
+                            else:
+                                df_att.loc[m, "退勤時刻"] = now_hm
+                        else:
+                            # 新規行（退勤先行）。座標があれば入れる
+                            df_att = pd.concat([df_att, pd.DataFrame([{
+                                "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                                "日付": action_date, "出勤時刻": "", "退勤時刻": now_hm,
+                                "緯度": (lat if (lat and lng) else ""), "経度": (lng if (lat and lng) else "")
+                            }])], ignore_index=True)
+
+                        if safe_write_csv(df_att, CSV_PATH, ATT_COLUMNS):
+                            st.session_state.pending_save = False
+                            st.success(f"✅ 退勤 を {now_hm} で保存しました。")
+                            time.sleep(1.2)
+                            st.rerun()
+
+    # ==============================
+    # 修正 / 削除（社員本人のみ）
+    # ==============================
+    with tab_edit:
+        with st.expander("出退勤の ✏️ 修正 / 🗑️ 削除", expanded=False):
+            df_self = df[
+                (df["社員ID"] == st.session_state.user_id) &
+                (df["日付"] >= start_date) & (df["日付"] <= end_date) &
+                (df["日付"] >= OPEN_START)  # 当月以降のみ編集可
+            ].sort_values("日付")
+
+            if df_self.empty:
+                st.caption("当月データがありません。")
+            else:
+                choice_dates = df_self["日付"].dt.strftime("%Y-%m-%d").tolist()
+                colL, colR = st.columns(2)
+                with colL:
+                    edit_date_str = st.selectbox("修正する日付を選択", options=choice_dates, key="self_edit_date")
+                row_cur = df_self[df_self["日付"].dt.strftime("%Y-%m-%d") == edit_date_str].iloc[0]
+                with colR:
+                    st.caption(f"選択中：{row_cur['氏名']} / {edit_date_str}")
+
+                c1, c2, c3 = st.columns([1,1,1])
+                with c1:
+                    new_start = st.text_input("出勤（HH:MM）", value=str(row_cur["出勤時刻"] or ""), key="self_edit_start")
+                with c2:
+                    new_end   = st.text_input("退勤（HH:MM）", value=str(row_cur["退勤時刻"] or ""), key="self_edit_end")
+                with c3:
+                    if st.button("この日の時刻を更新", key="self_edit_apply"):
+                        def _ok(t):
+                            if not str(t).strip(): return True
+                            try:
+                                datetime.strptime(str(t).strip(), "%H:%M")
+                                return True
+                            except:
+                                return False
+                        if not (_ok(new_start) and _ok(new_end)):
+                            st.error("時刻は HH:MM 形式で入力してください（例：07:30）。")
+                        else:
+                            df_all = _read_csv_flexible(CSV_PATH).fillna("")
+                            m = (df_all["社員ID"]==st.session_state.user_id) & (df_all["日付"]==edit_date_str)
+                            if not m.any():
+                                st.warning("該当日の記録が見つかりませんでした。")
+                            else:
+                                df_all.loc[m, "出勤時刻"] = str(new_start).strip()
+                                df_all.loc[m, "退勤時刻"] = str(new_end).strip()
+                                if safe_write_csv(df_all, CSV_PATH, ATT_COLUMNS):
+                                    dept_me = (df_login.loc[df_login["社員ID"]==st.session_state.user_id, "部署"].iloc[0]
+                                               if (df_login["社員ID"]==st.session_state.user_id).any() else "")
+                                    try:
+                                        _base = pd.Timestamp.today().normalize()
+                                        start_dt = pd.to_datetime(new_start, format="%H:%M", errors="coerce")
+                                        end_dt   = pd.to_datetime(new_end,   format="%H:%M", errors="coerce")
+                                        rec = {
+                                            "出_dt": pd.Timestamp.combine(_base.date(), start_dt.time()) if pd.notna(start_dt) else pd.NaT,
+                                            "退_dt": pd.Timestamp.combine(_base.date(), end_dt.time())   if pd.notna(end_dt)   else pd.NaT,
+                                            "部署": dept_me
+                                        }
+                                        work_h, ot_h = calc_work_overtime(rec)
+                                        st.success(f"更新しました。参考：勤務 {format_hours_minutes(work_h)} / 残業 {format_hours_minutes(ot_h)}")
+                                    except:
+                                        st.success("更新しました。残業は一覧再描画時に自動再計算されます。")
+                                    time.sleep(1)
+                                st.rerun()
+
+                st.markdown("—")
+                st.markdown("#### 🗑️ 削除（複数選択可）")
+                del_df = df_self.copy()
+                del_df["日付"] = del_df["日付"].dt.strftime("%Y-%m-%d")
+                del_df = del_df[["日付","出勤時刻","退勤時刻"]].assign(削除=False)
+
+                edited = st.data_editor(
+                    del_df,
+                    use_container_width=True,
+                    num_rows="fixed",
+                    hide_index=True,
+                    key="self_delete_editor",
+                    column_config={
+                        "削除": st.column_config.CheckboxColumn("削除", help="削除する行にチェック"),
+                        "日付": st.column_config.TextColumn("日付", disabled=True),
+                        "出勤時刻": st.column_config.TextColumn("出勤時刻", disabled=True),
+                        "退勤時刻": st.column_config.TextColumn("退勤時刻", disabled=True),
+                    }
+                )
+
+                to_delete = edited.loc[edited["削除"]==True, "日付"].tolist()
+                colA, colB = st.columns([1,2])
+                with colA:
+                    confirm_del = st.checkbox("本当に削除しますか？", key="self_delete_confirm")
+                with colB:
+                    if st.button("選択した行を削除", disabled=(len(to_delete)==0 or not confirm_del), key="self_delete_apply"):
+                        df_all = _read_csv_flexible(CSV_PATH).fillna("")
+                        for d in to_delete:
+                            mask = (df_all["社員ID"]==st.session_state.user_id) & (df_all["日付"]==d)
+                            df_all = df_all[~mask]
+                        if safe_write_csv(df_all, CSV_PATH, ATT_COLUMNS):
+                            st.success(f"{len(to_delete)} 件削除しました。")
+                            time.sleep(1)
+                            st.rerun()
+    # ==============================
+    # 残業申請
+    # ==============================
+    with tab_ot:
+        with st.expander("申請フォーム", expanded=True):
+            with st.form("overtime_form"):
+                target_date = st.date_input("対象日", value=today, min_value=OPEN_START.date(), max_value=OPEN_END.date(), key="ot_target_date")
+                _dstr = target_date.strftime("%Y-%m-%d")
+                today_row = df[(df["社員ID"]==st.session_state.user_id) & (df["日付"].dt.strftime("%Y-%m-%d")==_dstr)]
+                default_ot = float(today_row["残業時間"].iloc[0]) if not today_row.empty else 0.0
+                req_hours = st.number_input("申請残業H（時間・0.25刻み推奨）", min_value=0.0, max_value=24.0, step=0.25, value=float(default_ot), key="ot_hours")
+                reason = st.text_input("申請理由（任意だが推奨）", value="", key="ot_reason")
+                submitted = st.form_submit_button("申請する", type="primary")
+
+                if submitted:
+                    ot = read_overtime_csv()
+                    key_mask = (
+                        (ot["社員ID"] == st.session_state.user_id) &
+                        (ot["対象日"] == _dstr) &
+                        (ot["ステータス"].isin(["申請済","承認"]))
+                    )
+                    if key_mask.any():
+                        st.warning("この日付は、すでに『申請中』または『承認済』の残業申請があります。")
+                    else:
+                        new_row = {
+                            "社員ID": st.session_state.user_id,
+                            "氏名": st.session_state.user_name,
+                            "対象日": _dstr,
+                            "申請日時": datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "申請残業H": f"{float(req_hours):.2f}",
+                            "申請理由": reason,
+                            "ステータス": "申請済",
+                            "承認者": "", "承認日時": "", "却下理由": ""
+                        }
+                        ot = pd.concat([ot, pd.DataFrame([new_row])], ignore_index=True)
+                        write_overtime_csv(ot)
+                        st.success("✅ 残業申請を受け付けました。")
+                        time.sleep(1); st.rerun()
+
+        # 自分の申請一覧（当月）
+        ot_all = read_overtime_csv()
+        mask = (
+            (ot_all["社員ID"]==st.session_state.user_id) &
+            (ot_all["対象日"]>= start_date.strftime("%Y-%m-%d")) &
+            (ot_all["対象日"]<= end_date.strftime("%Y-%m-%d"))
+        )
+        mine = ot_all.loc[mask].sort_values(["対象日","申請日時"])
+        st.subheader("当月の残業申請一覧")
+        if mine.empty:
+            st.caption("この期間の残業申請はありません。")
+        else:
+            show = mine[["対象日","申請残業H","ステータス","承認者","承認日時","却下理由","申請理由"]].rename(
+                columns={"対象日":"日付","申請残業H":"申請H"}
+            )
+            st.dataframe(show, hide_index=True, use_container_width=True, key="ot_list_df")
+
+        # 本人取消（申請済のみ）
+        st.subheader("申請済の取消（本人）")
+        cand = mine[mine["ステータス"]=="申請済"].copy()
+        if cand.empty:
+            st.caption("取消できる『申請済』はありません。")
+        else:
+            view = cand[["対象日","申請残業H","申請日時","申請理由"]].copy()
+            view["取消"] = False
+            edited = st.data_editor(
+                view, hide_index=True, use_container_width=True, key="ot_cancel_editor",
+                column_config={
+                    "対象日": st.column_config.TextColumn("対象日", disabled=True),
+                    "申請残業H": st.column_config.TextColumn("申請残業H", disabled=True),
+                    "申請日時": st.column_config.TextColumn("申請日時", disabled=True),
+                    "申請理由": st.column_config.TextColumn("申請理由", disabled=True),
+                    "取消": st.column_config.CheckboxColumn("取消する")
+                })
+            to_cancel = edited[edited["取消"]==True][["対象日","申請日時"]].values.tolist()
+            if st.button("選択した『申請済』を取消", key="ot_cancel_apply"):
+                if not to_cancel:
+                    st.info("取り消す行が選択されていません。")
+                else:
+                    base = read_overtime_csv()
+                    before = len(base)
+                    ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+                    logs = []
+                    for d, ts_applied in to_cancel:
+                        km = (
+                            (base["社員ID"]==st.session_state.user_id) &
+                            (base["対象日"]==d) &
+                            (base["申請日時"]==ts_applied) &
+                            (base["ステータス"]=="申請済")
+                        )
+                        if km.any():
+                            logs.append({
+                                "timestamp": ts, "承認者": st.session_state.user_name,
+                                "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
+                                "休暇日": d, "申請日": ts_applied,  # 監査ログの既存列流用
+                                "旧ステータス": "申請済", "新ステータス": "本人取消(残業)", "却下理由": ""
+                            })
+                            base = base[~km]
+                    write_overtime_csv(base)
+                    if logs: append_audit_log(logs)
+                    st.success(f"{before-len(base)} 件の『申請済』を取り消しました。")
+                    time.sleep(1); st.rerun()
 
 # ==============================
 # 月別履歴（社員）
@@ -1803,210 +2006,6 @@ if view == "月別履歴":
         st.markdown(f"**🕒 合計残業時間（総計）：{format_hours_minutes(df_self['残業時間'].sum())}**")
         if "承認残業時間" in df_self.columns:
             st.markdown(f"**✅ 合計残業時間（承認済み）：{format_hours_minutes(df_self['承認残業時間'].sum())}**")
-
-# ==============================
-# 修正 / 削除（社員本人のみ）
-# ==============================
-with st.expander("出退勤の ✏️ 修正 / 🗑️ 削除", expanded=False):
-    df_self = df[
-        (df["社員ID"] == st.session_state.user_id) &
-        (df["日付"] >= start_date) & (df["日付"] <= end_date) &
-        (df["日付"] >= OPEN_START)              # ★ 追加：当月開始より前は編集対象に出さない
-    ].sort_values("日付")
-    if df_self.empty:
-        st.caption("当月データがありません。")
-    else:
-        choice_dates = df_self["日付"].dt.strftime("%Y-%m-%d").tolist()
-        colL, colR = st.columns(2)
-        with colL:
-            edit_date_str = st.selectbox("修正する日付を選択", options=choice_dates)
-        row_cur = df_self[df_self["日付"].dt.strftime("%Y-%m-%d") == edit_date_str].iloc[0]
-        with colR:
-            st.caption(f"選択中：{row_cur['氏名']} / {edit_date_str}")
-
-        c1, c2, c3 = st.columns([1,1,1])
-        with c1:
-            new_start = st.text_input("出勤（HH:MM）", value=str(row_cur["出勤時刻"] or ""))
-        with c2:
-            new_end   = st.text_input("退勤（HH:MM）", value=str(row_cur["退勤時刻"] or ""))
-        with c3:
-            if st.button("この日の時刻を更新"):
-                def _ok(t):
-                    if not str(t).strip(): return True
-                    try:
-                        datetime.strptime(str(t).strip(), "%H:%M")
-                        return True
-                    except:
-                        return False
-                if not (_ok(new_start) and _ok(new_end)):
-                    st.error("時刻は HH:MM 形式で入力してください（例：07:30）。")
-                else:
-                    df_all = _read_csv_flexible(CSV_PATH).fillna("")
-                    m = (df_all["社員ID"]==st.session_state.user_id) & (df_all["日付"]==edit_date_str)
-                    if not m.any():
-                        st.warning("該当日の記録が見つかりませんでした。")
-                    else:
-                        df_all.loc[m, "出勤時刻"] = str(new_start).strip()
-                        df_all.loc[m, "退勤時刻"] = str(new_end).strip()
-                        if safe_write_csv(df_all, CSV_PATH, ATT_COLUMNS):
-
-                            dept_me = (df_login.loc[df_login["社員ID"]==st.session_state.user_id, "部署"].iloc[0]
-                                       if (df_login["社員ID"]==st.session_state.user_id).any() else "")
-                            try:
-                                _base = pd.Timestamp.today().normalize()
-                                start_dt = pd.to_datetime(new_start, format="%H:%M", errors="coerce")
-                                end_dt   = pd.to_datetime(new_end,   format="%H:%M", errors="coerce")
-                                rec = {
-                                    "出_dt": pd.Timestamp.combine(_base.date(), start_dt.time()) if pd.notna(start_dt) else pd.NaT,
-                                    "退_dt": pd.Timestamp.combine(_base.date(), end_dt.time())   if pd.notna(end_dt)   else pd.NaT,
-                                    "部署": dept_me
-                                }
-                                work_h, ot_h = calc_work_overtime(rec)
-                                st.success(f"更新しました。参考：勤務 {format_hours_minutes(work_h)} / 残業 {format_hours_minutes(ot_h)}")
-                            except:
-                                st.success("更新しました。残業は一覧再描画時に自動再計算されます。")
-
-                            time.sleep(1)
-                        st.rerun()
-
-        st.markdown("—")
-        st.markdown("#### 🗑️ 削除（複数選択可）")
-        del_df = df_self.copy()
-        del_df["日付"] = del_df["日付"].dt.strftime("%Y-%m-%d")
-        del_df = del_df[["日付","出勤時刻","退勤時刻"]].assign(削除=False)
-
-        edited = st.data_editor(
-            del_df,
-            use_container_width=True,
-            num_rows="fixed",
-            hide_index=True,
-            column_config={
-                "削除": st.column_config.CheckboxColumn("削除", help="削除する行にチェック"),
-                "日付": st.column_config.TextColumn("日付", disabled=True),
-                "出勤時刻": st.column_config.TextColumn("出勤時刻", disabled=True),
-                "退勤時刻": st.column_config.TextColumn("退勤時刻", disabled=True),
-            }
-        )
-
-        to_delete = edited.loc[edited["削除"]==True, "日付"].tolist()
-        colA, colB = st.columns([1,2])
-        with colA:
-            confirm_del = st.checkbox("本当に削除しますか？")
-        with colB:
-            if st.button("選択した行を削除", disabled=(len(to_delete)==0 or not confirm_del)):
-                df_all = _read_csv_flexible(CSV_PATH).fillna("")
-                for d in to_delete:
-                    mask = (df_all["社員ID"]==st.session_state.user_id) & (df_all["日付"]==d)
-                    df_all = df_all[~mask]
-                if safe_write_csv(df_all, CSV_PATH, ATT_COLUMNS):
-                    st.success(f"{len(to_delete)} 件削除しました。")
-                    time.sleep(1)
-                    st.rerun()
-
-# ==============================
-# 残業申請
-# ==============================
-with st.expander("⏱️ 残業申請", expanded=False):
-    with st.form("overtime_form"):
-        target_date = st.date_input("対象日", value=today, min_value=OPEN_START.date(), max_value=OPEN_END.date())
-        # その日の現時点の自動計算残業Hを初期値に
-        _dstr = target_date.strftime("%Y-%m-%d")
-        today_row = df[(df["社員ID"]==st.session_state.user_id) & (df["日付"].dt.strftime("%Y-%m-%d")==_dstr)]
-        default_ot = float(today_row["残業時間"].iloc[0]) if not today_row.empty else 0.0
-        req_hours = st.number_input("申請残業H（時間・0.25刻み推奨）", min_value=0.0, max_value=24.0, step=0.25, value=float(default_ot))
-        reason = st.text_input("申請理由（任意だが推奨）", value="")
-        submitted = st.form_submit_button("申請する", type="primary")
-
-        if submitted:
-            ot = read_overtime_csv()
-            key_mask = (
-                (ot["社員ID"] == st.session_state.user_id) &
-                (ot["対象日"] == _dstr) &
-                (ot["ステータス"].isin(["申請済","承認"]))   # 申請中/承認済が既にあるなら二重申請を止める
-            )
-            if key_mask.any():
-                st.warning("この日付は、すでに『申請中』または『承認済』の残業申請があります。")
-            else:
-                new_row = {
-                    "社員ID": st.session_state.user_id,
-                    "氏名": st.session_state.user_name,
-                    "対象日": _dstr,
-                    "申請日時": datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
-                    "申請残業H": f"{float(req_hours):.2f}",
-                    "申請理由": reason,
-                    "ステータス": "申請済",
-                    "承認者": "",
-                    "承認日時": "",
-                    "却下理由": ""
-                }
-                ot = pd.concat([ot, pd.DataFrame([new_row])], ignore_index=True)
-                write_overtime_csv(ot)
-                st.success("✅ 残業申請を受け付けました。")
-                time.sleep(1)
-                st.rerun()
-
-    # 自分の申請一覧（当月）
-    ot_all = read_overtime_csv()
-    mask = (
-        (ot_all["社員ID"]==st.session_state.user_id) &
-        (ot_all["対象日"]>= start_date.strftime("%Y-%m-%d")) &
-        (ot_all["対象日"]<= end_date.strftime("%Y-%m-%d"))
-    )
-    mine = ot_all.loc[mask].sort_values(["対象日","申請日時"])
-    st.markdown("#### 当月の残業申請一覧")
-    if mine.empty:
-        st.caption("この期間の残業申請はありません。")
-    else:
-        show = mine[["対象日","申請残業H","ステータス","承認者","承認日時","却下理由","申請理由"]].rename(
-            columns={"対象日":"日付","申請残業H":"申請H"}
-        )
-        st.dataframe(show, hide_index=True, use_container_width=True)
-
-    # 本人取消（申請済のみ）
-    st.markdown("#### 申請済の取消（本人）")
-    cand = mine[mine["ステータス"]=="申請済"].copy()
-    if cand.empty:
-        st.caption("取消できる『申請済』はありません。")
-    else:
-        view = cand[["対象日","申請残業H","申請日時","申請理由"]].copy()
-        view["取消"] = False
-        edited = st.data_editor(view, hide_index=True, use_container_width=True,
-                                column_config={
-                                    "対象日": st.column_config.TextColumn("対象日", disabled=True),
-                                    "申請残業H": st.column_config.TextColumn("申請残業H", disabled=True),
-                                    "申請日時": st.column_config.TextColumn("申請日時", disabled=True),
-                                    "申請理由": st.column_config.TextColumn("申請理由", disabled=True),
-                                    "取消": st.column_config.CheckboxColumn("取消する")
-                                })
-        to_cancel = edited[edited["取消"]==True][["対象日","申請日時"]].values.tolist()
-        if st.button("選択した『申請済』を取消"):
-            if not to_cancel:
-                st.info("取り消す行が選択されていません。")
-            else:
-                base = read_overtime_csv()
-                before = len(base)
-                ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
-                logs = []
-                for d, ts_applied in to_cancel:
-                    km = (
-                        (base["社員ID"]==st.session_state.user_id) &
-                        (base["対象日"]==d) &
-                        (base["申請日時"]==ts_applied) &
-                        (base["ステータス"]=="申請済")
-                    )
-                    if km.any():
-                        # 監査ログ（残業も holiday_audit_log.csv に積むなら以下で種別付けしてもOK）
-                        logs.append({
-                            "timestamp": ts, "承認者": st.session_state.user_name,
-                            "社員ID": st.session_state.user_id, "氏名": st.session_state.user_name,
-                            "休暇日": d, "申請日": ts_applied,  # 流用カラム
-                            "旧ステータス": "申請済", "新ステータス": "本人取消(残業)", "却下理由": ""
-                        })
-                        base = base[~km]
-                write_overtime_csv(base)
-                if logs: append_audit_log(logs)
-                st.success(f"{before-len(base)} 件の『申請済』を取り消しました。")
-                time.sleep(1); st.rerun()
 
 # ==============================
 # 休日・休暇申請
